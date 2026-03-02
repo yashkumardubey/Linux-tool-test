@@ -12,9 +12,9 @@ RUN useradd --system --no-create-home --shell /usr/sbin/nologin patchagent || tr
 
 WORKDIR /opt/patch-agent
 
-# Copy agent
-COPY ../../agent/ ./agent/
-COPY ../../systemd/patch-agent.service ./patch-agent.service
+# Copy agent (build context is repo root)
+COPY agent/ ./agent/
+COPY systemd/patch-agent.service ./patch-agent.service
 
 WORKDIR /opt/patch-agent/agent
 

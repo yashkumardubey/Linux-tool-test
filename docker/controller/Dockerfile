@@ -6,7 +6,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /opt/patch-controller
 
-COPY ../../controller/ ./controller/
+COPY controller/ ./controller/
 WORKDIR /opt/patch-controller/controller
 
 RUN pip install --no-cache-dir -r requirements.txt

@@ -1,16 +1,19 @@
-<<<<<<< HEAD
 Demo and packaging
 - `Vagrantfile` and `scripts/vagrant_provision.sh` — spin up an Ubuntu VM and provision the agent for an end-to-end demo.
 - `packaging/build_deb.sh` — build a simple `.deb` package for the agent (prototype).
 - `scripts/run_integration_demo.sh` — CI/demo script that waits for agent and triggers a dry-run.
 How to run the Vagrant demo (local machine with VirtualBox):
 
-1. Generate certs on host:
+1. Generate certs on host.  The script now adds Subject Alternative Names
+for `agent` (container network hostname) plus `patch-agent.local` and
+`localhost` so that mTLS verification succeeds when the controller connects
+using the internal DNS name.  Remove `certs` first if you're regenerating
+so stale certificates aren't reused.
 
 ```bash
+rm -rf certs         # clear old certs if present
 ./scripts/generate_certs.sh certs
 ```
-
 2. Start the VM and provision:
 
 ```bash
@@ -85,6 +88,30 @@ Ansible roles
 Security note: this prototype uses token auth for simplicity. For production, use mTLS between controller and agents, signed packages, least-privilege agent users, and additional hardening.
 
 Next steps: wire the agent to your controller, configure the internal apt mirror, and test snapshot+rollback on a staging node.
-=======
-# Linux-tool-test
->>>>>>> a50e16c27776450e10ebd93b01eff5ea99a2e689
+
+Additional Linux host container
+
+The `docker/linuxhost` Dockerfile builds a standalone Ubuntu container with the agent preinstalled.   
+You can run it with `docker-compose up -d linuxhost` (port 9080/9101 forwarded).  Add a
+corresponding entry to `controller/config.yml` or use the GUI dropdown (`linuxhost`) to manage it
+from the controller exactly like any other target.
+
+
+Convenience commands
+--------------------
+A `Makefile` provides shortcuts for the most common workflows:
+
+```sh
+make demo        # build and start the full docker demo
+make compose-up  # start services only
+make compose-down# stop and cleanup
+make vagrant     # bring up the Vagrant demo VM
+make package     # build the .deb package
+make clean       # teardown and remove generated files
+```
+
+Grafana and Prometheus UI locations:
+
+- Prometheus: http://localhost:9090
+- Grafana: http://localhost:3000  (login admin/admin)
+

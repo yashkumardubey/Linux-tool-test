@@ -5,15 +5,16 @@ ROOT_DIR=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT_DIR"
 
 CERT_DIR=./certs
-if [ ! -d "$CERT_DIR" ]; then
-  echo "Generating certs in $CERT_DIR"
-  ./scripts/generate_certs.sh certs
-fi
+# always regenerate to pick up any SAN or config changes
+rm -rf "$CERT_DIR"
+echo "Generating certs in $CERT_DIR"
+./scripts/generate_certs.sh certs
 
 echo "Updating controller config to use client certs"
 # ensure controller config exists and points to certs
 if [ -f controller/config.yml ]; then
-  python - <<PY
+  if command -v python3 >/dev/null; then
+    python3 - <<PY
 import yaml
 p='controller/config.yml'
 with open(p,'r') as f:
@@ -25,6 +26,16 @@ with open(p,'w') as f:
     yaml.safe_dump(cfg,f)
 print('wrote',p)
 PY
+  else
+    # Fallback: manual sed/cat update
+    cat > controller/config.yml <<EOF
+agent_token: "REPLACE_WITH_SECRET_TOKEN"
+client_cert: "./certs/client.crt"
+client_key: "./certs/client.key"
+ca_cert: "./certs/ca.crt"
+EOF
+    echo "Wrote controller/config.yml (python3 not available; used fallback)"
+  fi
 fi
 
 echo "Building docker images and starting services"

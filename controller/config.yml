@@ -1,6 +1,4 @@
-agent_token: "REPLACE_WITH_SECRET_TOKEN"
-# Path to client cert and key to present to agent for mTLS (optional)
-client_cert: "./certs/client.crt"
-client_key: "./certs/client.key"
-# CA bundle path to verify agent server certificate
-ca_cert: "./certs/ca.crt"
+agent_token: REPLACE_WITH_SECRET_TOKEN
+ca_cert: ./certs/ca.crt
+client_cert: ./certs/client.crt
+client_key: ./certs/client.key

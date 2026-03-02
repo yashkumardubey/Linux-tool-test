@@ -35,6 +35,9 @@ jobs:
           sudo apt-get install -y vagrant virtualbox
       - name: Start demo VM (Vagrant)
         run: |
+          # ensure certs exist for TLS verification
+          rm -rf certs
+          ./scripts/generate_certs.sh certs
           vagrant up --provider=virtualbox || true
       - name: Run demo provisioning checks
         run: |
