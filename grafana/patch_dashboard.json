@@ -1,0 +1,25 @@
+{
+  "dashboard": {
+    "id": null,
+    "uid": null,
+    "title": "Patch Agent Overview",
+    "panels": [
+      {
+        "type": "graph",
+        "title": "Patch Job Status",
+        "targets": [
+          { "expr": "patch_job_status", "legendFormat": "status" }
+        ],
+        "gridPos": { "x": 0, "y": 0, "w": 24, "h": 8 }
+      },
+      {
+        "type": "graph",
+        "title": "Last Patch Timestamp",
+        "targets": [
+          { "expr": "last_patch_timestamp", "legendFormat": "last_patch" }
+        ],
+        "gridPos": { "x": 0, "y": 8, "w": 24, "h": 6 }
+      }
+    ]
+  }
+}

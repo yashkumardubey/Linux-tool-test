@@ -1,0 +1,17 @@
+---
+- name: Request agent to create snapshot
+  uri:
+    url: "http://{{ inventory_hostname }}:8080/snapshot/create"
+    method: POST
+    body: "{\"name\": \"{{ snapshot_name | default('snap-' ~ lookup('pipe','date +%s')) }}\"}"
+    body_format: json
+    status_code: 200
+  register: snapshot_create
+
+- name: Show snapshot response
+  debug:
+    var: snapshot_create.json
+
+- name: Save snapshot id to host facts (prototype)
+  set_fact:
+    latest_snapshot: "{{ snapshot_create.json.name | default('') }}"

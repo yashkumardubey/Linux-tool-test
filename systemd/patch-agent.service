@@ -1,0 +1,17 @@
+[Unit]
+Description=Offline Patch Agent
+After=network.target
+
+[Service]
+Type=simple
+User=patchagent
+Group=patchagent
+Environment=AGENT_RUN_AS_USER=patchagent
+Environment=AGENT_CERTFILE=/etc/patch-agent/certs/server.crt
+Environment=AGENT_KEYFILE=/etc/patch-agent/certs/server.key
+Environment=AGENT_CABUNDLE=/etc/patch-agent/certs/ca.crt
+ExecStart=/usr/bin/python3 /opt/patch-agent/agent.py --port 8080 --metrics-port 9100
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

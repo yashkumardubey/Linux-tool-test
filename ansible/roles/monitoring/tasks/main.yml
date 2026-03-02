@@ -1,0 +1,40 @@
+---
+- name: Install Prometheus and Grafana (Ubuntu)
+  apt:
+    name:
+      - prometheus
+      - grafana
+    state: present
+    update_cache: yes
+
+- name: Copy Prometheus config
+  copy:
+    src: ../../../prometheus/prometheus.yml
+    dest: /etc/prometheus/prometheus.yml
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Ensure grafana provisioning directories
+  file:
+    path: /etc/grafana/provisioning/dashboards
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Copy Grafana dashboard JSON
+  copy:
+    src: ../../../grafana/patch_dashboard.json
+    dest: /etc/grafana/provisioning/dashboards/patch_dashboard.json
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Restart Prometheus and Grafana
+  service:
+    name: "{{ item }}"
+    state: restarted
+  loop:
+    - prometheus
+    - grafana-server

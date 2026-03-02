@@ -1,0 +1,107 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Patch Controller</title>
+    <style>body{font-family:Arial,Helvetica,sans-serif;margin:20px}button{margin:5px}</style>
+  </head>
+  <body>
+    <h2>Offline Patch Controller</h2>
+    <div>
+      <label for="host">Select host:</label>
+      <select id="host"></select>
+    </div>
+    <div>
+      <button id="listUpdates">List Updates</button>
+      <button id="runUpgrade">Run Full Upgrade</button>
+      <button id="runSelected">Install Selected Package</button>
+      <button id="installUploaded">Install Uploaded .deb Files</button>
+      <button id="createSnapshot">Create Snapshot</button>
+      <button id="listSnapshots">List Snapshots</button>
+      <button id="showHistory">Show Job History</button>
+    </div>
+    <div>
+      <input id="pkgName" placeholder="package name (e.g. ntp)" />
+    </div>
+    <div>
+      <form id="uploadForm" enctype="multipart/form-data">
+        <input type="file" name="file" multiple />
+        <button id="uploadBtn">Upload .deb to Host</button>
+      </form>
+    </div>
+    <pre id="out" style="background:#f7f7f7;padding:10px;border:1px solid #ddd;max-height:400px;overflow:auto"></pre>
+
+    <script>
+      async function loadHosts(){
+        const r = await fetch('/api/hosts');
+        const j = await r.json();
+        const sel = document.getElementById('host');
+        sel.innerHTML='';
+        for(const h of j.hosts){
+          const o = document.createElement('option'); o.value = h.host; o.text = h.name + ' ('+h.host+')'; sel.appendChild(o);
+        }
+      }
+      function show(msg){ document.getElementById('out').textContent = JSON.stringify(msg, null, 2); }
+
+      document.getElementById('listUpdates').onclick = async ()=>{
+        const host = document.getElementById('host').value;
+        const r = await fetch('/api/proxy/updates', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({host})});
+        show(await r.json());
+      }
+
+      document.getElementById('runUpgrade').onclick = async ()=>{
+        const host = document.getElementById('host').value;
+        const body = {host, body: {packages: []}};
+        const r = await fetch('/api/proxy/install_selected', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+        show(await r.json());
+      }
+
+      document.getElementById('runSelected').onclick = async ()=>{
+        const host = document.getElementById('host').value;
+        const pkg = document.getElementById('pkgName').value.trim();
+        if(!pkg){ alert('enter package'); return }
+        const body = {host, body: {packages: [pkg], hold: []}};
+        const r = await fetch('/api/proxy/install_selected', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+        show(await r.json());
+      }
+
+      document.getElementById('createSnapshot').onclick = async ()=>{
+        const host = document.getElementById('host').value;
+        const name = 'snap-' + Math.floor(Date.now()/1000);
+        const body = {host, body: {name: name}};
+        const r = await fetch('/api/proxy/snapshot_create', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+        show(await r.json());
+      }
+
+      document.getElementById('listSnapshots').onclick = async ()=>{
+        const host = document.getElementById('host').value;
+        const r = await fetch('/api/proxy/snapshots', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({host})});
+        show(await r.json());
+      }
+
+      document.getElementById('showHistory').onclick = async ()=>{
+        const host = document.getElementById('host').value;
+        const r = await fetch('/api/proxy/history', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({host})});
+        show(await r.json());
+      }
+
+      document.getElementById('uploadForm').onsubmit = async (e)=>{
+        e.preventDefault();
+        const host = document.getElementById('host').value;
+        const form = e.target;
+        const fd = new FormData(form);
+        fd.append('host', host);
+        const r = await fetch('/api/proxy/upload_deb', {method:'POST', body: fd});
+        show(await r.json());
+      }
+
+      document.getElementById('installUploaded').onclick = async ()=>{
+        const host = document.getElementById('host').value;
+        const r = await fetch('/api/proxy/install_uploaded', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({host})});
+        show(await r.json());
+      }
+
+      loadHosts();
+    </script>
+  </body>
+</html>
