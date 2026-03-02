@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 Demo and packaging
 - `Vagrantfile` and `scripts/vagrant_provision.sh` — spin up an Ubuntu VM and provision the agent for an end-to-end demo.
 - `packaging/build_deb.sh` — build a simple `.deb` package for the agent (prototype).
@@ -84,3 +85,6 @@ Ansible roles
 Security note: this prototype uses token auth for simplicity. For production, use mTLS between controller and agents, signed packages, least-privilege agent users, and additional hardening.
 
 Next steps: wire the agent to your controller, configure the internal apt mirror, and test snapshot+rollback on a staging node.
+=======
+# Linux-tool-test
+>>>>>>> a50e16c27776450e10ebd93b01eff5ea99a2e689
