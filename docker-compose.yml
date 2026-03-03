@@ -1,59 +1,17 @@
-version: '3.7'
 services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
   agent:
-    build:
-      context: .
-      dockerfile: ./docker/agent/Dockerfile
-    container_name: patch_agent
-    ports:
-      - "8080:8080"
-      - "9100:9100"
-    volumes:
-      - ./certs:/etc/patch-agent/certs:ro
+    build: ./agent
     environment:
-      - AGENT_RUN_AS_USER=patchagent
-      - AGENT_CERTFILE=/etc/patch-agent/certs/server.crt
-      - AGENT_KEYFILE=/etc/patch-agent/certs/server.key
-      - AGENT_CABUNDLE=/etc/patch-agent/certs/ca.crt
-
-  controller:
-    build:
-      context: .
-      dockerfile: ./docker/controller/Dockerfile
-    container_name: patch_controller
-    ports:
-      - "5000:5000"
-    volumes:
-      - ./controller/config.yml:/opt/patch-controller/controller/config.yml:ro
-      - ./certs:/opt/patch-controller/controller/certs:ro
-    environment:
-      - PYTHONUNBUFFERED=1
+      - CONTROLLER_URL=http://backend:8000
     depends_on:
-      - agent
-
-  prometheus:
-    build:
-      context: .
-      dockerfile: ./docker/prometheus/Dockerfile
-    container_name: patch_prometheus
+      - backend
+  frontend:
+    build: ./frontend
     ports:
-      - "9090:9090"
-    volumes:
-      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - "3000:80"
     depends_on:
-      - agent
-
-  grafana:
-    build:
-      context: .
-      dockerfile: ./docker/grafana/Dockerfile
-    container_name: patch_grafana
-    ports:
-      - "3000:3000"
-    volumes:
-      - grafana-storage:/var/lib/grafana
-    depends_on:
-      - prometheus
-
-volumes:
-  grafana-storage:
+      - backend

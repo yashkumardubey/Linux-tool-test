@@ -1,34 +1,30 @@
 #!/usr/bin/env python3
-"""Minimal patch agent prototype.
-
-- Exposes a small REST API to trigger a patch job and view status.
-- Exposes Prometheus metrics at /metrics.
-
-This is a prototype: production use requires hardening, proper auth (mTLS/tokens),
-robust error handling, and snapshot integration.
-"""
+"""PatchMaster Agent - Full patch management with snapshot/rollback, offline install, package comparison."""
 
 import argparse
 import logging
-import ssl
-import pwd
-import grp
-import stat
+import os
 import shutil
 import subprocess
-import threading
 import time
+import json
+import glob
+import re
+from datetime import datetime
 from flask import Flask, jsonify, request
 from prometheus_client import start_http_server, Gauge
-import os
-from functools import wraps
+from logging.handlers import RotatingFileHandler
 
+# --- Config ---
 LOG_DIR = '/var/log/patch-agent'
-os.makedirs(LOG_DIR, exist_ok=True)
+SNAPSHOT_DIR = '/var/lib/patch-agent/snapshots'
+OFFLINE_DIR = '/var/lib/patch-agent/offline-debs'
+
+for d in [LOG_DIR, SNAPSHOT_DIR, OFFLINE_DIR]:
+    os.makedirs(d, exist_ok=True)
 
 logger = logging.getLogger("patch-agent")
 logger.setLevel(logging.INFO)
-from logging.handlers import RotatingFileHandler
 fh = RotatingFileHandler(os.path.join(LOG_DIR, 'agent.log'), maxBytes=5*1024*1024, backupCount=5)
 fmt = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
 fh.setFormatter(fmt)
@@ -42,392 +38,386 @@ app = Flask(__name__)
 JOB_STATUS = {"state": "idle", "last_result": None}
 JOB_HISTORY = []
 
-# Prometheus metrics
-patch_job_gauge = Gauge("patch_job_status", "Patch job status (0=idle,1=running,2=success,3=failure)")
-last_patch_ts = Gauge("last_patch_timestamp", "Last patch completion epoch seconds")
+patch_gauge = Gauge("patch_job_status", "0=idle,1=running,2=success,3=failure")
+last_patch_ts = Gauge("last_patch_timestamp", "Last patch epoch")
 
 
-def run_command(cmd, timeout=3600):
-    logger.info("Running: %s", " ".join(cmd))
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    out = []
+def run_cmd(cmd, timeout=3600):
+    logger.info("CMD: %s", " ".join(cmd) if isinstance(cmd, list) else cmd)
     try:
-        for line in proc.stdout:
-            logger.info(line.rstrip())
-            out.append(line)
-        rc = proc.wait(timeout=timeout)
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=timeout)
+        return proc.returncode, proc.stdout
     except subprocess.TimeoutExpired:
-        proc.kill()
-        rc = -1
-    return rc, "".join(out)
-
-
-def drop_privileges(user_name: str):
-    try:
-        pw = pwd.getpwnam(user_name)
-    except KeyError:
-        logger.warning('User %s not found; skipping privilege drop', user_name)
-        return
-    uid = pw.pw_uid
-    gid = pw.pw_gid
-    logger.info('Dropping privileges to %s (%d:%d)', user_name, uid, gid)
-    os.setgid(gid)
-    os.setuid(uid)
-    os.environ['HOME'] = pw.pw_dir
-
+        return -1, "Command timed out"
+    except Exception as e:
+        return -1, str(e)
 
 
 def record_job(entry):
+    entry["ts"] = time.time()
+    entry["time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    JOB_HISTORY.insert(0, entry)
+    if len(JOB_HISTORY) > 500:
+        JOB_HISTORY.pop()
+
+
+# === PACKAGE LISTING ===
+
+@app.route("/packages/installed")
+def packages_installed():
+    rc, out = run_cmd(["dpkg-query", "-W", "-f", "${Package}\t${Version}\t${Status}\n"], timeout=30)
+    if rc != 0:
+        return jsonify({"error": "dpkg-query failed", "output": out}), 500
+    packages = []
+    for line in out.strip().splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 3 and "installed" in parts[2].lower():
+            packages.append({"name": parts[0], "version": parts[1], "status": parts[2].strip()})
+    return jsonify({"packages": packages, "count": len(packages)})
+
+
+@app.route("/packages/refresh", methods=["POST"])
+def packages_refresh():
+    """Run apt-get update to refresh package cache. Requires internet on agent."""
+    rc, out = run_cmd(["apt-get", "update", "-qq"], timeout=120)
+    return jsonify({"success": rc == 0, "output": out})
+
+
+@app.route("/packages/upgradable")
+def packages_upgradable():
+    # Don't run apt-get update — agent may have no internet
+    rc, out = run_cmd(["apt", "list", "--upgradable"], timeout=30)
+    if rc != 0:
+        return jsonify({"error": "apt list failed", "output": out}), 500
+    packages = []
+    for line in out.strip().splitlines():
+        # Skip non-package lines (warnings, headers, blanks)
+        if not line.strip() or line.startswith("Listing") or line.startswith("WARNING"):
+            continue
+        # Valid lines look like: package/source version arch [upgradable from: old_version]
+        if "/" not in line:
+            continue
+        try:
+            name_src = line.split("/")[0].strip()
+            rest = line.split(" ")
+            candidate = rest[1] if len(rest) > 1 else ""
+            current = ""
+            if "[upgradable from:" in line:
+                current = line.split("[upgradable from:")[1].strip(" ]")
+            packages.append({"name": name_src, "current_version": current, "available_version": candidate})
+        except (IndexError, ValueError):
+            continue
+    return jsonify({"packages": packages, "count": len(packages)})
+
+
+@app.route("/packages/uris", methods=["POST"])
+def packages_uris():
+    """Return download URIs for specified packages using apt-get --print-uris (works offline from cache)."""
+    data = request.get_json(silent=True) or {}
+    pkg_names = data.get("packages", [])
+    if pkg_names:
+        cmd = ["apt-get", "--print-uris", "-y", "install"] + pkg_names
+    else:
+        cmd = ["apt-get", "--print-uris", "-y", "upgrade"]
+    rc, out = run_cmd(cmd, timeout=60)
+    uris = []
+    for line in out.strip().splitlines():
+        # URI lines look like: 'http://archive.ubuntu.com/.../pkg_ver_arch.deb' pkg_ver_arch.deb 12345 SHA256:...
+        line = line.strip()
+        if not line.startswith("'") or not ".deb" in line:
+            continue
+        parts = line.split(" ")
+        if len(parts) >= 3:
+            url = parts[0].strip("'")
+            filename = parts[1]
+            size = parts[2] if len(parts) > 2 else "0"
+            uris.append({"url": url, "filename": filename, "size": size})
+    return jsonify({"uris": uris, "count": len(uris)})
+
+
+# === SNAPSHOTS (dpkg-based, no LVM needed) ===
+
+def _create_snapshot(name=None):
+    if not name:
+        name = f"snap-{int(time.time())}"
+    snap_dir = os.path.join(SNAPSHOT_DIR, name)
+    os.makedirs(snap_dir, exist_ok=True)
+    result = {"name": name, "path": snap_dir, "success": False, "details": {}}
     try:
-        JOB_HISTORY.insert(0, {**entry, "ts": time.time()})
-        # cap history
-        if len(JOB_HISTORY) > 200:
-            JOB_HISTORY.pop()
-    except Exception:
-        pass
+        rc, out = run_cmd(["dpkg-query", "-W", "-f", "${Package}=${Version}\n"])
+        if rc == 0:
+            with open(os.path.join(snap_dir, "packages.txt"), "w") as f:
+                f.write(out)
+            result["details"]["packages_count"] = len(out.strip().splitlines())
+        rc2, out2 = run_cmd(["dpkg", "--get-selections"])
+        if rc2 == 0:
+            with open(os.path.join(snap_dir, "selections.txt"), "w") as f:
+                f.write(out2)
+        sources_dir = os.path.join(snap_dir, "sources")
+        os.makedirs(sources_dir, exist_ok=True)
+        if os.path.exists("/etc/apt/sources.list"):
+            shutil.copy2("/etc/apt/sources.list", sources_dir)
+        if os.path.isdir("/etc/apt/sources.list.d"):
+            for sf in os.listdir("/etc/apt/sources.list.d"):
+                shutil.copy2(os.path.join("/etc/apt/sources.list.d", sf), sources_dir)
+        meta = {"name": name, "created": datetime.now().isoformat(), "packages_count": result["details"].get("packages_count", 0)}
+        with open(os.path.join(snap_dir, "meta.json"), "w") as f:
+            json.dump(meta, f, indent=2)
+        result["success"] = True
+        result["created"] = meta["created"]
+        logger.info("Snapshot '%s' created with %d packages", name, meta["packages_count"])
+    except Exception as e:
+        result["error"] = str(e)
+        logger.error("Snapshot creation failed: %s", e)
+    record_job({"type": "snapshot", **result})
+    return result
 
 
-def require_token(f):
-    @wraps(f)
-    def wrapped(*args, **kwargs):
-        token = os.environ.get('AGENT_TOKEN')
-        if token:
-            auth = request.headers.get('Authorization', '')
-            if not auth.startswith('Bearer ' + token):
-                return jsonify({'error': 'missing/invalid token'}), 401
-        return f(*args, **kwargs)
-    return wrapped
+def _rollback_snapshot(name):
+    snap_dir = os.path.join(SNAPSHOT_DIR, name)
+    result = {"name": name, "success": False, "steps": []}
+    if not os.path.isdir(snap_dir):
+        result["error"] = f"Snapshot '{name}' not found"
+        return result
+    try:
+        selections_file = os.path.join(snap_dir, "selections.txt")
+        packages_file = os.path.join(snap_dir, "packages.txt")
+        if not os.path.exists(selections_file):
+            result["error"] = "No selections file in snapshot"
+            return result
+        with open(selections_file, "r") as f:
+            sel_data = f.read()
+        proc = subprocess.run(["dpkg", "--set-selections"], input=sel_data, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        result["steps"].append({"step": "set-selections", "rc": proc.returncode, "output": proc.stdout[:500]})
+        rc, out = run_cmd(["apt-get", "dselect-upgrade", "-y", "--allow-downgrades"], timeout=600)
+        result["steps"].append({"step": "dselect-upgrade", "rc": rc, "output": out[:1000]})
+        if rc == 0:
+            result["success"] = True
+            logger.info("Rollback to '%s' completed", name)
+        else:
+            if os.path.exists(packages_file):
+                with open(packages_file) as f:
+                    pkgs = [l.strip() for l in f if l.strip()]
+                for i in range(0, len(pkgs), 50):
+                    batch = pkgs[i:i+50]
+                    rc3, out3 = run_cmd(["apt-get", "install", "-y", "--allow-downgrades"] + batch, timeout=300)
+                result["steps"].append({"step": "version-pinned-install", "rc": rc3})
+                result["success"] = (rc3 == 0)
+    except Exception as e:
+        result["error"] = str(e)
+    record_job({"type": "rollback", **result})
+    return result
 
 
-def perform_patch_job(dry_run=False):
+@app.route("/snapshot/create", methods=["POST"])
+def api_create_snapshot():
+    data = request.get_json(silent=True) or {}
+    result = _create_snapshot(data.get("name"))
+    return jsonify(result), 200 if result["success"] else 500
+
+
+@app.route("/snapshot/list", methods=["GET"])
+def api_list_snapshots():
+    snapshots = []
+    if os.path.isdir(SNAPSHOT_DIR):
+        for name in sorted(os.listdir(SNAPSHOT_DIR), reverse=True):
+            meta_file = os.path.join(SNAPSHOT_DIR, name, "meta.json")
+            if os.path.exists(meta_file):
+                with open(meta_file) as f:
+                    snapshots.append(json.load(f))
+            else:
+                snapshots.append({"name": name, "created": "unknown"})
+    return jsonify({"snapshots": snapshots, "count": len(snapshots)})
+
+
+@app.route("/snapshot/rollback", methods=["POST"])
+def api_rollback_snapshot():
+    data = request.get_json(silent=True) or {}
+    name = data.get("name")
+    if not name:
+        return jsonify({"error": "snapshot name required"}), 400
+    result = _rollback_snapshot(name)
+    return jsonify(result), 200 if result["success"] else 500
+
+
+@app.route("/snapshot/delete", methods=["POST"])
+def api_delete_snapshot():
+    data = request.get_json(silent=True) or {}
+    name = data.get("name")
+    if not name:
+        return jsonify({"error": "snapshot name required"}), 400
+    snap_dir = os.path.join(SNAPSHOT_DIR, name)
+    if os.path.isdir(snap_dir):
+        shutil.rmtree(snap_dir)
+        return jsonify({"deleted": True, "name": name})
+    return jsonify({"error": "snapshot not found"}), 404
+
+
+# === PATCH EXECUTION with snapshot + rollback ===
+
+@app.route("/patch/execute", methods=["POST"])
+def execute_patch():
+    if JOB_STATUS["state"] == "running":
+        return jsonify({"error": "another job is running"}), 409
+    data = request.get_json(silent=True) or {}
+    # Sanitize package names — only allow valid dpkg names (alphanumeric, -, ., +)
+    _valid_pkg = re.compile(r'^[a-z0-9][a-z0-9.+\-]+$')
+    packages = [p.strip() for p in data.get("packages", []) if isinstance(p, str) and _valid_pkg.match(p.strip())]
+    hold = [h.strip() for h in data.get("hold", []) if isinstance(h, str) and _valid_pkg.match(h.strip())]
+    dry_run = data.get("dry_run", False)
+    auto_snapshot = data.get("auto_snapshot", True)
+    auto_rollback = data.get("auto_rollback", True)
     JOB_STATUS["state"] = "running"
-    patch_job_gauge.set(1)
+    patch_gauge.set(1)
+    result = {"success": False, "snapshot": None, "patch_output": "", "rollback": None, "dry_run": dry_run}
     try:
-        # Placeholder: snapshot should be created here (LVM/Btrfs/ZFS/hypervisor)
-        logger.info("[PATCH] Pre-checks and snapshot step (placeholder)")
-
-        # Assume internal mirror is configured in /etc/apt/sources.list.d/internal-mirror.list
+        if auto_snapshot and not dry_run:
+            snap_result = _create_snapshot(f"pre-patch-{int(time.time())}")
+            result["snapshot"] = snap_result
+        held = []
+        for pkg in hold:
+            run_cmd(["apt-mark", "hold", pkg])
+            held.append(pkg)
+        rc, out = run_cmd(["apt-get", "update", "-qq"], timeout=120)
+        result["patch_output"] += out
         if dry_run:
-            logger.info("Dry run: apt update && apt -s upgrade")
-            rc, out = run_command(["/usr/bin/sudo", "apt-get", "update"])  # update package metadata
-            rc2, out2 = run_command(["/usr/bin/sudo", "apt-get", "-s", "upgrade"])  # simulation
-            success = (rc == 0)
+            cmd = (["apt-get", "-s", "install"] + packages) if packages else ["apt-get", "-s", "upgrade"]
         else:
-            rc, out = run_command(["/usr/bin/sudo", "apt-get", "update"])  # update package metadata
-            if rc != 0:
-                raise RuntimeError("apt-get update failed")
-            rc2, out2 = run_command(["/usr/bin/sudo", "apt-get", "-y", "upgrade"])  # perform upgrades
-            success = (rc2 == 0)
-
-        if success:
-            JOB_STATUS["state"] = "idle"
-            JOB_STATUS["last_result"] = {"success": True, "out": out + out2}
-            patch_job_gauge.set(2)
+            cmd = (["apt-get", "-y", "install"] + packages) if packages else ["apt-get", "-y", "upgrade"]
+        rc2, out2 = run_cmd(cmd, timeout=600)
+        result["patch_output"] += out2
+        patch_success = (rc2 == 0)
+        for pkg in held:
+            run_cmd(["apt-mark", "unhold", pkg])
+        if not patch_success and auto_rollback and not dry_run:
+            if result.get("snapshot", {}).get("success"):
+                rb = _rollback_snapshot(result["snapshot"]["name"])
+                result["rollback"] = rb
+        result["success"] = patch_success
+        JOB_STATUS["state"] = "idle"
+        JOB_STATUS["last_result"] = result
+        patch_gauge.set(2 if patch_success else 3)
+        if patch_success:
             last_patch_ts.set(time.time())
-            return True, JOB_STATUS["last_result"]
-        else:
-            JOB_STATUS["state"] = "idle"
-            JOB_STATUS["last_result"] = {"success": False, "out": out + out2}
-            patch_job_gauge.set(3)
-            return False, JOB_STATUS["last_result"]
+        record_job({"type": "patch", **result})
+        return jsonify(result)
     except Exception as e:
         JOB_STATUS["state"] = "idle"
-        JOB_STATUS["last_result"] = {"success": False, "error": str(e)}
-        patch_job_gauge.set(3)
-        return False, JOB_STATUS["last_result"]
+        result["error"] = str(e)
+        patch_gauge.set(3)
+        record_job({"type": "patch", **result})
+        return jsonify(result), 500
 
+
+# === OFFLINE PATCHING ===
+
+@app.route("/offline/upload", methods=["POST"])
+def offline_upload():
+    files = request.files.getlist("file")
+    if not files:
+        return jsonify({"error": "no files provided"}), 400
+    saved = []
+    for f in files:
+        if not f.filename.endswith(".deb"):
+            continue
+        dest = os.path.join(OFFLINE_DIR, f.filename)
+        f.save(dest)
+        saved.append(f.filename)
+    return jsonify({"uploaded": saved, "count": len(saved), "path": OFFLINE_DIR})
+
+
+@app.route("/offline/list", methods=["GET"])
+def offline_list():
+    debs = []
+    if os.path.isdir(OFFLINE_DIR):
+        for f in sorted(os.listdir(OFFLINE_DIR)):
+            if f.endswith(".deb"):
+                fpath = os.path.join(OFFLINE_DIR, f)
+                debs.append({"name": f, "size": os.path.getsize(fpath), "size_mb": round(os.path.getsize(fpath)/1048576, 2)})
+    return jsonify({"debs": debs, "count": len(debs)})
+
+
+@app.route("/offline/install", methods=["POST"])
+def offline_install():
+    if JOB_STATUS["state"] == "running":
+        return jsonify({"error": "another job is running"}), 409
+    data = request.get_json(silent=True) or {}
+    auto_snapshot = data.get("auto_snapshot", True)
+    auto_rollback = data.get("auto_rollback", True)
+    selected = data.get("files", [])
+    if selected:
+        deb_files = [os.path.join(OFFLINE_DIR, f) for f in selected if os.path.exists(os.path.join(OFFLINE_DIR, f))]
+    else:
+        deb_files = glob.glob(os.path.join(OFFLINE_DIR, "*.deb"))
+    if not deb_files:
+        return jsonify({"error": "no .deb files found"}), 400
+    JOB_STATUS["state"] = "running"
+    patch_gauge.set(1)
+    result = {"success": False, "snapshot": None, "install_output": "", "rollback": None, "files": [os.path.basename(f) for f in deb_files]}
+    try:
+        if auto_snapshot:
+            snap = _create_snapshot(f"pre-offline-{int(time.time())}")
+            result["snapshot"] = snap
+        rc, out = run_cmd(["dpkg", "-i"] + deb_files, timeout=300)
+        result["install_output"] += out
+        if rc != 0:
+            rc2, out2 = run_cmd(["apt-get", "-f", "-y", "install"], timeout=120)
+            result["install_output"] += out2
+            ok = (rc2 == 0)
+        else:
+            ok = True
+        if not ok and auto_rollback and result.get("snapshot", {}).get("success"):
+            rb = _rollback_snapshot(result["snapshot"]["name"])
+            result["rollback"] = rb
+        result["success"] = ok
+        JOB_STATUS["state"] = "idle"
+        JOB_STATUS["last_result"] = result
+        patch_gauge.set(2 if ok else 3)
+        if ok:
+            last_patch_ts.set(time.time())
+        record_job({"type": "offline_install", **result})
+        return jsonify(result)
+    except Exception as e:
+        JOB_STATUS["state"] = "idle"
+        result["error"] = str(e)
+        patch_gauge.set(3)
+        record_job({"type": "offline_install", **result})
+        return jsonify(result), 500
+
+
+@app.route("/offline/clear", methods=["POST"])
+def offline_clear():
+    removed = []
+    for f in glob.glob(os.path.join(OFFLINE_DIR, "*.deb")):
+        os.remove(f)
+        removed.append(os.path.basename(f))
+    return jsonify({"cleared": removed, "count": len(removed)})
+
+
+# === BASIC ROUTES ===
 
 @app.route("/health")
 def health():
     return jsonify({"status": "ok", "state": JOB_STATUS["state"]})
 
-
 @app.route("/status")
 def status():
     return jsonify(JOB_STATUS)
 
-
-@app.route("/run_patch", methods=["POST"])
-def run_patch():
-    data = request.get_json(silent=True) or {}
-    dry = bool(data.get("dry_run", False))
-    if JOB_STATUS["state"] == "running":
-        return jsonify({"error": "another job is running"}), 409
-
-    def worker():
-        perform_patch_job(dry_run=dry)
-
-    t = threading.Thread(target=worker, daemon=True)
-    t.start()
-    return jsonify({"started": True, "dry_run": dry})
-
-
-@app.route("/updates", methods=["GET"])
-def list_updates():
-    """Return list of upgradable packages (name, candidate).
-
-    Uses `apt list --upgradable` and parses the output. Requires apt on host.
-    """
-    try:
-        rc, out = run_command(["/usr/bin/apt", "list", "--upgradable"], timeout=30)
-        if rc != 0:
-            return jsonify({"error": "apt list failed", "output": out}), 500
-        lines = out.splitlines()
-        pkgs = []
-        for line in lines:
-            # skip header lines
-            if line.startswith("Listing...") or not line.strip():
-                continue
-            # format: pkg/version arch [upgradable from: old]
-            parts = line.split()
-            namever = parts[0]
-            if '/' in namever:
-                name = namever.split('/')[0]
-            else:
-                name = namever
-            candidate = namever.split('/')[1] if '/' in namever else ''
-            # try to parse current version from tail
-            current = None
-            if "[upgradable from:" in line:
-                try:
-                    current = line.split('[upgradable from:')[1].strip(' ]')
-                except Exception:
-                    current = None
-            pkgs.append({"name": name, "candidate": candidate, "current": current})
-        return jsonify({"upgradable": pkgs})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/upload_deb", methods=["POST"])
-def upload_deb():
-    files = request.files.getlist('file')
-    saved = []
-    saved_dir = "/tmp/patch_agent_debs"
-    import os
-    os.makedirs(saved_dir, exist_ok=True)
-    for f in files:
-        dest = os.path.join(saved_dir, f.filename)
-        f.save(dest)
-        saved.append(dest)
-    return jsonify({"saved": saved})
-
-
-@app.route("/install_uploaded", methods=["POST"])
-def install_uploaded():
-    """Install uploaded .deb files previously placed via /upload_deb"""
-    saved_dir = "/tmp/patch_agent_debs"
-    import os
-    if not os.path.isdir(saved_dir):
-        return jsonify({"error": "no uploaded packages"}), 400
-    files = [os.path.join(saved_dir, f) for f in os.listdir(saved_dir) if f.endswith('.deb')]
-    if not files:
-        return jsonify({"error": "no .deb files found"}), 400
-    JOB_STATUS["state"] = "running"
-    patch_job_gauge.set(1)
-    try:
-        # install debs
-        rc, out = run_command(["/usr/bin/sudo", "/usr/bin/dpkg", "-i"] + files)
-        if rc != 0:
-            # try to fix deps
-            rc2, out2 = run_command(["/usr/bin/sudo", "/usr/bin/apt-get", "-f", "-y", "install"])
-            success = (rc2 == 0)
-            out += out2
-        else:
-            success = True
-        JOB_STATUS["state"] = "idle"
-        JOB_STATUS["last_result"] = {"success": success, "out": out}
-        patch_job_gauge.set(2 if success else 3)
-        if success:
-            last_patch_ts.set(time.time())
-        return jsonify(JOB_STATUS["last_result"])
-    except Exception as e:
-        JOB_STATUS["state"] = "idle"
-        JOB_STATUS["last_result"] = {"success": False, "error": str(e)}
-        patch_job_gauge.set(3)
-        return jsonify(JOB_STATUS["last_result"]), 500
-
-
-@app.route("/install_selected", methods=["POST"])
-def install_selected():
-    """Install selected packages or perform full upgrade with exclusions.
-
-    JSON body:
-    {
-      "packages": ["pkg1", "pkg2"],   # optional, if empty do full upgrade
-      "hold": ["postgresql", "pgpool2"]  # packages to hold/ exclude during upgrade
-    }
-    """
-    data = request.get_json(silent=True) or {}
-    packages = data.get('packages', []) or []
-    hold = data.get('hold', []) or []
-    if JOB_STATUS["state"] == "running":
-        return jsonify({"error": "another job is running"}), 409
-
-    JOB_STATUS["state"] = "running"
-    patch_job_gauge.set(1)
-    try:
-        # hold packages
-        held = []
-        for pkg in hold:
-            run_command(["/usr/bin/sudo", "/usr/bin/apt-mark", "hold", pkg])
-            held.append(pkg)
-
-        # update cache
-        rc, out = run_command(["/usr/bin/sudo", "apt-get", "update"])
-        if rc != 0:
-            raise RuntimeError("apt-get update failed: " + out)
-
-        if packages:
-            cmd = ["/usr/bin/sudo", "apt-get", "-y", "install"] + packages
-        else:
-            cmd = ["/usr/bin/sudo", "apt-get", "-y", "upgrade"]
-
-        rc2, out2 = run_command(cmd)
-        success = (rc2 == 0)
-
-        # unhold packages
-        for pkg in held:
-            run_command(["/usr/bin/sudo", "/usr/bin/apt-mark", "unhold", pkg])
-
-        JOB_STATUS["state"] = "idle"
-        JOB_STATUS["last_result"] = {"success": success, "out": out + out2}
-        patch_job_gauge.set(2 if success else 3)
-        if success:
-            last_patch_ts.set(time.time())
-        return jsonify(JOB_STATUS["last_result"])
-    except Exception as e:
-        # try to unhold on error
-        for pkg in hold:
-            run_command(["/usr/bin/sudo", "/usr/bin/apt-mark", "unhold", pkg])
-        JOB_STATUS["state"] = "idle"
-        JOB_STATUS["last_result"] = {"success": False, "error": str(e)}
-        patch_job_gauge.set(3)
-        return jsonify(JOB_STATUS["last_result"]), 500
-
-
-@app.route('/snapshots', methods=['GET'])
-@require_token
-def list_snapshots():
-    """Return in-memory snapshot records (prototype)."""
-    # In a real system this should query snapshot backend or a persistent store
-    snaps = [s for s in JOB_HISTORY if s.get('type') == 'snapshot']
-    return jsonify({'snapshots': snaps})
-
-
-@app.route('/snapshot/create', methods=['POST'])
-@require_token
-def create_snapshot():
-    data = request.get_json(silent=True) or {}
-    name = data.get('name') or f"snap-{int(time.time())}"
-    method = data.get('method', 'lvm')
-    # Prototype: attempt LVM snapshot if present, otherwise fallback placeholder
-    entry = {'type': 'snapshot', 'name': name, 'method': method, 'success': False}
-    # detect LVM logical volumes (simple heuristic)
-    try:
-        rc, out = run_command(['/sbin/lvs', '--noheadings', '-o', 'lv_path'])
-        if rc == 0 and out.strip():
-            lv = out.splitlines()[0].strip()
-            snap_name = name
-            cmd = ['/usr/bin/sudo', '/sbin/lvcreate', '-L', '1G', '-s', '-n', snap_name, lv]
-            rc2, out2 = run_command(cmd)
-            entry['cmd'] = ' '.join(cmd)
-            entry['out'] = out2
-            entry['success'] = (rc2 == 0)
-        else:
-            # fallback: store placeholder record
-            entry['out'] = 'no LVM detected; snapshot not created (prototype)'
-            entry['success'] = False
-    except Exception as e:
-        entry['out'] = str(e)
-        entry['success'] = False
-
-    record_job(entry)
-    return jsonify(entry)
-
-
-@app.route('/snapshot/rollback', methods=['POST'])
-@require_token
-def rollback_snapshot():
-    data = request.get_json(silent=True) or {}
-    name = data.get('name')
-    if not name:
-        return jsonify({'error': 'snapshot name required'}), 400
-    # Prototype: attempt to remove snapshot and activate (real rollback requires careful steps)
-    entry = {'type': 'rollback', 'name': name, 'success': False}
-    try:
-        # Try LVM rollback sequence (high-level prototype):
-        # 1) find snapshot lv path
-        rc, out = run_command(['/sbin/lvs', '--noheadings', '-o', 'lv_name,vg_name'])
-        if rc == 0:
-            found = False
-            for l in out.splitlines():
-                parts = l.split()
-                if parts and parts[0] == name:
-                    found = True
-                    vg = parts[1]
-                    snap_path = f"/dev/{vg}/{name}"
-                    # In many cases rollback requires deactivating origin, removing, restoring, etc.
-                    entry['out'] = f"found snapshot {snap_path}; manual rollback required (prototype)"
-                    entry['success'] = False
-                    break
-            if not found:
-                entry['out'] = 'snapshot not found'
-                entry['success'] = False
-        else:
-            entry['out'] = 'cannot list lvs'
-            entry['success'] = False
-    except Exception as e:
-        entry['out'] = str(e)
-        entry['success'] = False
-
-    record_job(entry)
-    return jsonify(entry)
-
-
-@app.route('/history', methods=['GET'])
-@require_token
+@app.route("/history")
 def history():
-    return jsonify({'history': JOB_HISTORY})
+    return jsonify({"history": JOB_HISTORY[:100]})
 
 
-def main(dev_server=False, port=8080, metrics_port=9100):
-    # start prometheus metrics server on separate port
+def main(port=8080, metrics_port=9100):
     start_http_server(metrics_port)
-    logger.info("Prometheus metrics available on port %s", metrics_port)
-    # Optionally drop privileges if AGENT_RUN_AS_USER is set and we're root
-    run_as = os.environ.get('AGENT_RUN_AS_USER')
-    if run_as and os.geteuid() == 0:
-        # ensure log dir ownership
-        try:
-            pw = pwd.getpwnam(run_as)
-            shutil.chown(LOG_DIR, user=pw.pw_name, group=pw.pw_name)
-        except Exception:
-            pass
-        drop_privileges(run_as)
-
-    # Configure SSL / mTLS if certs provided
-    certfile = os.environ.get('AGENT_CERTFILE')
-    keyfile = os.environ.get('AGENT_KEYFILE')
-    ca_bundle = os.environ.get('AGENT_CABUNDLE')
-    if certfile and keyfile:
-        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        context.load_cert_chain(certfile=certfile, keyfile=keyfile)
-        if ca_bundle:
-            context.load_verify_locations(cafile=ca_bundle)
-            context.verify_mode = ssl.CERT_REQUIRED
-        ssl_context = context
-    else:
-        ssl_context = None
-
-    # For prototype we use Flask's built-in server; in production use gunicorn behind a reverse-proxy.
-    app.run(host="0.0.0.0", port=port, ssl_context=ssl_context)
+    logger.info("Agent starting on port %s", port)
+    app.run(host="0.0.0.0", port=port)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dev-server", action="store_true")
-    parser.add_argument("--metrics-port", type=int, default=9100)
     parser.add_argument("--port", type=int, default=8080)
+    parser.add_argument("--metrics-port", type=int, default=9100)
     args = parser.parse_args()
-    main(dev_server=args.dev_server, port=args.port, metrics_port=args.metrics_port)
+    main(port=args.port, metrics_port=args.metrics_port)
