@@ -198,6 +198,7 @@ def _rollback_snapshot(name):
             if os.path.exists(packages_file):
                 with open(packages_file) as f:
                     pkgs = [l.strip() for l in f if l.strip()]
+                rc3 = -1
                 for i in range(0, len(pkgs), 50):
                     batch = pkgs[i:i+50]
                     rc3, out3 = run_cmd(["apt-get", "install", "-y", "--allow-downgrades"] + batch, timeout=300)
@@ -230,12 +231,22 @@ def api_list_snapshots():
     return jsonify({"snapshots": snapshots, "count": len(snapshots)})
 
 
+def _safe_snapshot_name(name):
+    """Validate snapshot name to prevent path traversal."""
+    if not name or not isinstance(name, str):
+        return None
+    safe = os.path.basename(name)
+    if not safe or safe.startswith(".") or "/" in name or "\\" in name:
+        return None
+    return safe
+
+
 @app.route("/snapshot/rollback", methods=["POST"])
 def api_rollback_snapshot():
     data = request.get_json(silent=True) or {}
-    name = data.get("name")
+    name = _safe_snapshot_name(data.get("name"))
     if not name:
-        return jsonify({"error": "snapshot name required"}), 400
+        return jsonify({"error": "valid snapshot name required"}), 400
     result = _rollback_snapshot(name)
     return jsonify(result), 200 if result["success"] else 500
 
@@ -243,10 +254,12 @@ def api_rollback_snapshot():
 @app.route("/snapshot/delete", methods=["POST"])
 def api_delete_snapshot():
     data = request.get_json(silent=True) or {}
-    name = data.get("name")
+    name = _safe_snapshot_name(data.get("name"))
     if not name:
-        return jsonify({"error": "snapshot name required"}), 400
+        return jsonify({"error": "valid snapshot name required"}), 400
     snap_dir = os.path.join(SNAPSHOT_DIR, name)
+    if not os.path.realpath(snap_dir).startswith(os.path.realpath(SNAPSHOT_DIR)):
+        return jsonify({"error": "invalid snapshot name"}), 400
     if os.path.isdir(snap_dir):
         shutil.rmtree(snap_dir)
         return jsonify({"deleted": True, "name": name})
@@ -318,11 +331,18 @@ def offline_upload():
         return jsonify({"error": "no files provided"}), 400
     saved = []
     for f in files:
-        if not f.filename.endswith(".deb"):
+        if not f.filename or not f.filename.endswith(".deb"):
             continue
-        dest = os.path.join(OFFLINE_DIR, f.filename)
+        # Sanitize filename to prevent path traversal
+        safe_name = os.path.basename(f.filename)
+        if not safe_name or safe_name.startswith("."):
+            continue
+        dest = os.path.join(OFFLINE_DIR, safe_name)
+        # Verify resolved path is inside OFFLINE_DIR
+        if not os.path.realpath(dest).startswith(os.path.realpath(OFFLINE_DIR)):
+            continue
         f.save(dest)
-        saved.append(f.filename)
+        saved.append(safe_name)
     return jsonify({"uploaded": saved, "count": len(saved), "path": OFFLINE_DIR})
 
 
@@ -346,7 +366,13 @@ def offline_install():
     auto_rollback = data.get("auto_rollback", True)
     selected = data.get("files", [])
     if selected:
-        deb_files = [os.path.join(OFFLINE_DIR, f) for f in selected if os.path.exists(os.path.join(OFFLINE_DIR, f))]
+        # Sanitize filenames to prevent path traversal
+        deb_files = []
+        for f in selected:
+            safe = os.path.basename(f)
+            full = os.path.join(OFFLINE_DIR, safe)
+            if os.path.exists(full) and os.path.realpath(full).startswith(os.path.realpath(OFFLINE_DIR)):
+                deb_files.append(full)
     else:
         deb_files = glob.glob(os.path.join(OFFLINE_DIR, "*.deb"))
     if not deb_files:

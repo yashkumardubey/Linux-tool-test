@@ -1,7 +1,9 @@
 """Backend proxy API — forwards commands from UI to agent machines."""
 import httpx
 import os
+import re
 import tempfile
+import shutil
 import logging
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from typing import Optional
@@ -13,25 +15,42 @@ AGENT_PORT = 8080
 TIMEOUT = 30.0
 logger = logging.getLogger("agent-proxy")
 
+_IP_PATTERN = re.compile(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$')
+
+
+def _validate_host_ip(ip: str):
+    """Validate that the IP is a registered host to prevent SSRF."""
+    if not _IP_PATTERN.match(ip):
+        raise HTTPException(400, f"Invalid IP format: {ip}")
+    registered_ips = {h.ip for h in hosts_db}
+    if ip not in registered_ips:
+        raise HTTPException(404, f"Host {ip} is not registered")
+
 
 def _agent_url(ip: str, path: str) -> str:
     return f"http://{ip}:{AGENT_PORT}{path}"
 
 
 async def _get(ip: str, path: str):
+    _validate_host_ip(ip)
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT) as c:
             r = await c.get(_agent_url(ip, path))
             return r.json()
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(502, f"Agent {ip} unreachable: {e}")
 
 
-async def _post(ip: str, path: str, json_body: dict = None):
+async def _post(ip: str, path: str, json_body: dict | None = None):
+    _validate_host_ip(ip)
     try:
         async with httpx.AsyncClient(timeout=120.0) as c:
             r = await c.post(_agent_url(ip, path), json=json_body or {})
             return r.json()
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(502, f"Agent {ip} unreachable: {e}")
 
@@ -168,69 +187,77 @@ async def server_patch(host_ip: str, body: dict = {}):
         tmp_dir = tempfile.mkdtemp(prefix="patchmaster-debs-")
         downloaded_files = []
 
-        async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
-            for uri in uris:
-                url = uri["url"]
-                fname = uri["filename"]
-                if not fname.endswith(".deb"):
-                    continue
-                try:
-                    r = await client.get(url)
-                    if r.status_code == 200:
-                        path = os.path.join(tmp_dir, fname)
-                        with open(path, "wb") as f:
-                            f.write(r.content)
-                        downloaded_files.append(path)
-                        result["downloaded"].append(fname)
-                    else:
-                        result["download_failed"].append({"file": fname, "status": r.status_code})
-                except Exception as e:
-                    result["download_failed"].append({"file": fname, "error": str(e)})
+        try:
+            async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
+                for uri in uris:
+                    url = uri["url"]
+                    fname = uri["filename"]
+                    if not fname.endswith(".deb"):
+                        continue
+                    # Sanitize filename
+                    safe_fname = os.path.basename(fname)
+                    if not safe_fname:
+                        continue
+                    try:
+                        r = await client.get(url)
+                        if r.status_code == 200:
+                            path = os.path.join(tmp_dir, safe_fname)
+                            with open(path, "wb") as f:
+                                f.write(r.content)
+                            downloaded_files.append(path)
+                            result["downloaded"].append(safe_fname)
+                        else:
+                            result["download_failed"].append({"file": safe_fname, "status": r.status_code})
+                    except Exception as e:
+                        result["download_failed"].append({"file": safe_fname, "error": str(e)})
 
-        if not downloaded_files:
-            result["phase"] = "download_failed"
-            result["message"] = "Failed to download any packages"
-            return result
-
-        # Step 3: Push .debs to agent's offline upload
-        result["phase"] = "pushing_to_agent"
-        agent_url = _agent_url(host_ip, "/offline/upload")
-        async with httpx.AsyncClient(timeout=300.0) as client:
-            files_to_send = []
-            for fpath in downloaded_files:
-                fname = os.path.basename(fpath)
-                files_to_send.append(("file", (fname, open(fpath, "rb"), "application/octet-stream")))
-
-            r = await client.post(agent_url, files=files_to_send)
-
-            # Close file handles
-            for _, (_, fh, _) in files_to_send:
-                fh.close()
-
-            if r.status_code != 200:
-                result["phase"] = "push_failed"
-                result["message"] = f"Failed to upload .debs to agent: {r.text}"
+            if not downloaded_files:
+                result["phase"] = "download_failed"
+                result["message"] = "Failed to download any packages"
                 return result
 
-            upload_result = r.json()
-            result["pushed"] = upload_result.get("count", 0)
+            # Step 3: Push .debs to agent's offline upload
+            result["phase"] = "pushing_to_agent"
+            agent_url = _agent_url(host_ip, "/offline/upload")
+            file_handles = []
+            try:
+                files_to_send = []
+                for fpath in downloaded_files:
+                    fname = os.path.basename(fpath)
+                    fh = open(fpath, "rb")
+                    file_handles.append(fh)
+                    files_to_send.append(("file", (fname, fh, "application/octet-stream")))
 
-        # Step 4: Trigger offline install on agent
-        result["phase"] = "installing"
-        install_data = {
-            "auto_snapshot": auto_snapshot,
-            "auto_rollback": auto_rollback,
-        }
-        install_result = await _post(host_ip, "/offline/install", install_data)
-        result["install_result"] = install_result
-        result["success"] = install_result.get("success", False)
-        result["phase"] = "done"
+                async with httpx.AsyncClient(timeout=300.0) as client:
+                    r = await client.post(agent_url, files=files_to_send)
 
-        # Cleanup temp files
-        import shutil
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+                if r.status_code != 200:
+                    result["phase"] = "push_failed"
+                    result["message"] = f"Failed to upload .debs to agent: {r.text}"
+                    return result
 
-        return result
+                upload_result = r.json()
+                result["pushed"] = upload_result.get("count", 0)
+            finally:
+                for fh in file_handles:
+                    fh.close()
+
+            # Step 4: Trigger offline install on agent
+            result["phase"] = "installing"
+            install_data = {
+                "auto_snapshot": auto_snapshot,
+                "auto_rollback": auto_rollback,
+            }
+            install_result = await _post(host_ip, "/offline/install", install_data)
+            result["install_result"] = install_result
+            result["success"] = install_result.get("success", False)
+            result["phase"] = "done"
+
+            return result
+
+        finally:
+            # Always cleanup temp files
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
     except HTTPException:
         raise

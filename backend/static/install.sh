@@ -33,7 +33,7 @@ if ! command -v dpkg >/dev/null 2>&1; then
 fi
 
 # Download agent .deb
-echo "[1/4] Downloading agent package..."
+echo "[1/6] Downloading agent package..."
 if command -v curl >/dev/null 2>&1; then
   curl -fsSL -o "$TMP_DEB" "$DEB_URL"
 elif command -v wget >/dev/null 2>&1; then
@@ -45,13 +45,13 @@ fi
 echo "      Downloaded to ${TMP_DEB}"
 
 # Install .deb
-echo "[2/5] Installing agent package..."
+echo "[2/6] Installing agent package..."
 dpkg -i "$TMP_DEB" || true
 apt-get install -f -y >/dev/null 2>&1 || true
 echo "      Package installed."
 
 # Install Python dependencies
-echo "[3/5] Installing Python dependencies..."
+echo "[3/6] Installing Python dependencies..."
 apt-get install -y python3-flask python3-requests python3-psutil python3-prometheus-client 2>/dev/null || true
 if command -v pip3 >/dev/null 2>&1; then
   pip3 install --break-system-packages flask prometheus_client psutil requests 2>/dev/null || true
@@ -59,7 +59,7 @@ fi
 echo "      Dependencies installed."
 
 # Configure master URL
-echo "[4/5] Configuring agent to report to ${MASTER_IP}..."
+echo "[4/6] Configuring agent to report to ${MASTER_IP}..."
 mkdir -p /etc/patch-agent
 cat > /etc/patch-agent/env <<EOF
 CONTROLLER_URL=http://${MASTER_IP}:8000
