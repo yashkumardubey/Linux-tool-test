@@ -5,9 +5,12 @@ import re
 import tempfile
 import shutil
 import logging
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Depends
 from typing import Optional
-from api.hosts import hosts_db
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from database import get_db
+from models.db_models import Host
 
 router = APIRouter(prefix="/api/agent", tags=["agent-proxy"])
 
@@ -18,12 +21,12 @@ logger = logging.getLogger("agent-proxy")
 _IP_PATTERN = re.compile(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$')
 
 
-def _validate_host_ip(ip: str):
+async def _validate_host_ip(ip: str, db: AsyncSession):
     """Validate that the IP is a registered host to prevent SSRF."""
     if not _IP_PATTERN.match(ip):
         raise HTTPException(400, f"Invalid IP format: {ip}")
-    registered_ips = {h.ip for h in hosts_db}
-    if ip not in registered_ips:
+    result = await db.scalar(select(Host).where(Host.ip == ip))
+    if not result:
         raise HTTPException(404, f"Host {ip} is not registered")
 
 
@@ -31,8 +34,8 @@ def _agent_url(ip: str, path: str) -> str:
     return f"http://{ip}:{AGENT_PORT}{path}"
 
 
-async def _get(ip: str, path: str):
-    _validate_host_ip(ip)
+async def _get(ip: str, path: str, db: AsyncSession):
+    await _validate_host_ip(ip, db)
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT) as c:
             r = await c.get(_agent_url(ip, path))
@@ -43,8 +46,9 @@ async def _get(ip: str, path: str):
         raise HTTPException(502, f"Agent {ip} unreachable: {e}")
 
 
-async def _post(ip: str, path: str, json_body: dict | None = None):
-    _validate_host_ip(ip)
+async def _post(ip: str, path: str, json_body: dict | None = None, db: AsyncSession = None):
+    if db:
+        await _validate_host_ip(ip, db)
     try:
         async with httpx.AsyncClient(timeout=120.0) as c:
             r = await c.post(_agent_url(ip, path), json=json_body or {})
@@ -57,87 +61,87 @@ async def _post(ip: str, path: str, json_body: dict | None = None):
 
 # --- Package info ---
 @router.get("/{host_ip}/packages/installed")
-async def proxy_installed(host_ip: str):
-    return await _get(host_ip, "/packages/installed")
+async def proxy_installed(host_ip: str, db: AsyncSession = Depends(get_db)):
+    return await _get(host_ip, "/packages/installed", db)
 
 
 @router.get("/{host_ip}/packages/upgradable")
-async def proxy_upgradable(host_ip: str):
-    return await _get(host_ip, "/packages/upgradable")
+async def proxy_upgradable(host_ip: str, db: AsyncSession = Depends(get_db)):
+    return await _get(host_ip, "/packages/upgradable", db)
 
 
 @router.post("/{host_ip}/packages/refresh")
-async def proxy_refresh(host_ip: str):
-    return await _post(host_ip, "/packages/refresh")
+async def proxy_refresh(host_ip: str, db: AsyncSession = Depends(get_db)):
+    return await _post(host_ip, "/packages/refresh", db=db)
 
 
 # --- Snapshots ---
 @router.get("/{host_ip}/snapshot/list")
-async def proxy_snap_list(host_ip: str):
-    return await _get(host_ip, "/snapshot/list")
+async def proxy_snap_list(host_ip: str, db: AsyncSession = Depends(get_db)):
+    return await _get(host_ip, "/snapshot/list", db)
 
 
 @router.post("/{host_ip}/snapshot/create")
-async def proxy_snap_create(host_ip: str, body: dict = {}):
-    return await _post(host_ip, "/snapshot/create", body)
+async def proxy_snap_create(host_ip: str, body: dict = {}, db: AsyncSession = Depends(get_db)):
+    return await _post(host_ip, "/snapshot/create", body, db)
 
 
 @router.post("/{host_ip}/snapshot/rollback")
-async def proxy_snap_rollback(host_ip: str, body: dict = {}):
-    return await _post(host_ip, "/snapshot/rollback", body)
+async def proxy_snap_rollback(host_ip: str, body: dict = {}, db: AsyncSession = Depends(get_db)):
+    return await _post(host_ip, "/snapshot/rollback", body, db)
 
 
 @router.post("/{host_ip}/snapshot/delete")
-async def proxy_snap_delete(host_ip: str, body: dict = {}):
-    return await _post(host_ip, "/snapshot/delete", body)
+async def proxy_snap_delete(host_ip: str, body: dict = {}, db: AsyncSession = Depends(get_db)):
+    return await _post(host_ip, "/snapshot/delete", body, db)
 
 
 # --- Patch execution ---
 @router.post("/{host_ip}/patch/execute")
-async def proxy_patch(host_ip: str, body: dict = {}):
-    return await _post(host_ip, "/patch/execute", body)
+async def proxy_patch(host_ip: str, body: dict = {}, db: AsyncSession = Depends(get_db)):
+    return await _post(host_ip, "/patch/execute", body, db)
 
 
 # --- Offline ---
 @router.get("/{host_ip}/offline/list")
-async def proxy_offline_list(host_ip: str):
-    return await _get(host_ip, "/offline/list")
+async def proxy_offline_list(host_ip: str, db: AsyncSession = Depends(get_db)):
+    return await _get(host_ip, "/offline/list", db)
 
 
 @router.post("/{host_ip}/offline/install")
-async def proxy_offline_install(host_ip: str, body: dict = {}):
-    return await _post(host_ip, "/offline/install", body)
+async def proxy_offline_install(host_ip: str, body: dict = {}, db: AsyncSession = Depends(get_db)):
+    return await _post(host_ip, "/offline/install", body, db)
 
 
 @router.post("/{host_ip}/offline/clear")
-async def proxy_offline_clear(host_ip: str):
-    return await _post(host_ip, "/offline/clear")
+async def proxy_offline_clear(host_ip: str, db: AsyncSession = Depends(get_db)):
+    return await _post(host_ip, "/offline/clear", db=db)
 
 
 # --- Status / history ---
 @router.get("/{host_ip}/health")
-async def proxy_health(host_ip: str):
-    return await _get(host_ip, "/health")
+async def proxy_health(host_ip: str, db: AsyncSession = Depends(get_db)):
+    return await _get(host_ip, "/health", db)
 
 
 @router.get("/{host_ip}/status")
-async def proxy_status(host_ip: str):
-    return await _get(host_ip, "/status")
+async def proxy_status(host_ip: str, db: AsyncSession = Depends(get_db)):
+    return await _get(host_ip, "/status", db)
 
 
 @router.get("/{host_ip}/history")
-async def proxy_history(host_ip: str):
-    return await _get(host_ip, "/history")
+async def proxy_history(host_ip: str, db: AsyncSession = Depends(get_db)):
+    return await _get(host_ip, "/history", db)
 
 
 # --- Server-side package download + push ---
 @router.post("/{host_ip}/packages/uris")
-async def proxy_uris(host_ip: str, body: dict = {}):
-    return await _post(host_ip, "/packages/uris", body)
+async def proxy_uris(host_ip: str, body: dict = {}, db: AsyncSession = Depends(get_db)):
+    return await _post(host_ip, "/packages/uris", body, db)
 
 
 @router.post("/{host_ip}/patch/server-patch")
-async def server_patch(host_ip: str, body: dict = {}):
+async def server_patch(host_ip: str, body: dict = {}, db: AsyncSession = Depends(get_db)):
     """
     Full server-side patching workflow for air-gapped agents:
     1. Get download URIs from agent (reads its local apt cache)
@@ -145,6 +149,7 @@ async def server_patch(host_ip: str, body: dict = {}):
     3. Server pushes .debs to agent's offline endpoint
     4. Agent installs with dpkg -i (snapshot + rollback protection)
     """
+    await _validate_host_ip(host_ip, db)
     packages = body.get("packages", [])
     hold = body.get("hold", [])
     auto_snapshot = body.get("auto_snapshot", True)

@@ -1,17 +1,42 @@
 services:
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: patchmaster
+      POSTGRES_PASSWORD: patchmaster
+      POSTGRES_DB: patchmaster
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U patchmaster"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   backend:
     build: ./backend
     ports:
       - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://patchmaster:patchmaster@db:5432/patchmaster
+      - SECRET_KEY=change-me-to-a-secure-random-string
+    depends_on:
+      db:
+        condition: service_healthy
+
   agent:
     build: ./agent
     environment:
       - CONTROLLER_URL=http://backend:8000
     depends_on:
       - backend
+
   frontend:
     build: ./frontend
     ports:
       - "3000:80"
     depends_on:
       - backend
+
+volumes:
+  pgdata:
