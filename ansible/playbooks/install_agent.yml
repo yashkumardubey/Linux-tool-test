@@ -1,6 +1,0 @@
----
-- name: Install patch agent (control -> hosts)
-  hosts: all
-  become: true
-  roles:
-    - install_agent

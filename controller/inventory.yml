@@ -1,7 +1,0 @@
-hosts:
-  - name: localhost
-    host: 127.0.0.1
-    groups: ["all", "db"]
-  - name: vm1
-    host: 192.168.122.10
-    groups: ["all"]
