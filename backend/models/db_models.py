@@ -259,5 +259,5 @@ class NotificationChannel(Base):
     channel_type = Column(String(30), nullable=False)  # "email", "slack", "teams", "webhook"
     config = Column(JSON, default=dict)  # {"url": "...", "token": "...", etc.}
     events = Column(JSON, default=list)  # ["patch.failed", "cve.critical", "agent.offline"]
-    is_active = Column(Boolean, default=True)
+    is_enabled = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)

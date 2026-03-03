@@ -1,6 +1,9 @@
 #!/bin/bash
-# PatchMaster Agent Installer
+# PatchMaster Agent Installer (Offline / Air-Gapped)
 # Usage: curl -sS http://<master-ip>:3000/download/install.sh | sudo bash -s -- <master-ip>
+#
+# The .deb package is fully self-contained with a bundled Python virtualenv.
+# No internet access required on the target host.
 set -euo pipefail
 
 MASTER_IP="${1:-}"
@@ -15,7 +18,7 @@ DEB_URL="${MASTER_URL}/download/agent-latest.deb"
 TMP_DEB="/tmp/patch-agent.deb"
 
 echo "============================================"
-echo "  PatchMaster Agent Installer"
+echo "  PatchMaster Agent Installer (Offline)"
 echo "============================================"
 echo "Master Server: ${MASTER_IP}"
 echo ""
@@ -33,40 +36,30 @@ if ! command -v dpkg >/dev/null 2>&1; then
 fi
 
 # Download agent .deb
-echo "[1/6] Downloading agent package..."
+echo "[1/4] Downloading agent package..."
 if command -v curl >/dev/null 2>&1; then
   curl -fsSL -o "$TMP_DEB" "$DEB_URL"
 elif command -v wget >/dev/null 2>&1; then
   wget -qO "$TMP_DEB" "$DEB_URL"
 else
-  echo "ERROR: Neither curl nor wget found. Install one and retry."
+  echo "ERROR: Neither curl nor wget found."
   exit 1
 fi
 echo "      Downloaded to ${TMP_DEB}"
 
-# Install .deb
-echo "[2/6] Installing agent package..."
-dpkg -i "$TMP_DEB" || true
-apt-get install -f -y >/dev/null 2>&1 || true
-echo "      Package installed."
-
-# Install Python dependencies
-echo "[3/6] Installing Python dependencies..."
-apt-get install -y python3-flask python3-requests python3-psutil python3-prometheus-client 2>/dev/null || true
-if command -v pip3 >/dev/null 2>&1; then
-  pip3 install --break-system-packages flask prometheus_client psutil requests 2>/dev/null || true
-fi
-echo "      Dependencies installed."
+# Install .deb (self-contained — all Python deps bundled in virtualenv)
+echo "[2/4] Installing agent package..."
+dpkg -i "$TMP_DEB"
+echo "      Package installed (all dependencies bundled)."
 
 # Configure master URL
-echo "[4/6] Configuring agent to report to ${MASTER_IP}..."
+echo "[3/4] Configuring agent to report to ${MASTER_IP}..."
 mkdir -p /etc/patch-agent
 cat > /etc/patch-agent/env <<EOF
 CONTROLLER_URL=http://${MASTER_IP}:8000
 EOF
-chown -R patchagent:patchagent /etc/patch-agent 2>/dev/null || true
 
-# Update systemd services to use env file
+# Create and start systemd services using bundled venv
 cat > /etc/systemd/system/patch-agent.service <<EOF
 [Unit]
 Description=PatchMaster Agent - Heartbeat
@@ -77,7 +70,7 @@ Wants=network-online.target
 Type=simple
 User=root
 EnvironmentFile=/etc/patch-agent/env
-ExecStart=/usr/bin/python3 /opt/patch-agent/main.py
+ExecStart=/opt/patch-agent/run-heartbeat.sh
 Restart=always
 RestartSec=10
 
@@ -95,7 +88,7 @@ Wants=network-online.target
 Type=simple
 User=root
 EnvironmentFile=/etc/patch-agent/env
-ExecStart=/usr/bin/python3 /opt/patch-agent/agent.py --port 8080 --metrics-port 9100
+ExecStart=/opt/patch-agent/run-api.sh
 Restart=always
 RestartSec=5
 
@@ -103,14 +96,12 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
-# Start agent services
-echo "[5/6] Starting agent services..."
+echo "[4/4] Starting agent services..."
 systemctl daemon-reload
 systemctl enable --now patch-agent.service
 systemctl enable --now patch-agent-api.service
 sleep 3
 
-echo "[6/6] Verifying..."
 if systemctl is-active --quiet patch-agent && systemctl is-active --quiet patch-agent-api; then
   echo ""
   echo "============================================"

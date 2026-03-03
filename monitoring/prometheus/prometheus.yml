@@ -1,0 +1,24 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # PatchMaster Backend API
+  - job_name: "patchmaster-backend"
+    metrics_path: "/metrics"
+    static_configs:
+      - targets: ["backend:8000"]
+        labels:
+          component: "backend"
+
+  # PatchMaster Agents (add more targets as agents are deployed)
+  - job_name: "patchmaster-agents"
+    static_configs:
+      - targets: ["agent:9100"]
+        labels:
+          component: "agent"
+
+  # Prometheus self-monitoring
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]

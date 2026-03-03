@@ -16,6 +16,8 @@ from api.audit import router as audit_router
 from api.compliance import router as compliance_router
 from api.cve import router as cve_router
 from api.notifications import router as notifications_router
+from api.metrics import router as metrics_router, MetricsMiddleware
+from api.zabbix import router as zabbix_router
 
 
 @asynccontextmanager
@@ -25,6 +27,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="PatchMaster", version="2.0.0", lifespan=lifespan)
+
+# Prometheus request metrics middleware
+app.add_middleware(MetricsMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
@@ -69,3 +74,7 @@ app.include_router(compliance_router)
 app.include_router(cve_router)
 # Notifications
 app.include_router(notifications_router)
+# Prometheus metrics
+app.include_router(metrics_router)
+# Zabbix integration
+app.include_router(zabbix_router)
