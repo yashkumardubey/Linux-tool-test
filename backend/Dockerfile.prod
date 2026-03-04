@@ -1,0 +1,51 @@
+###############################################################################
+#  PatchMaster Backend — Production Dockerfile
+#  Multi-stage build, non-root user, health-check built-in
+###############################################################################
+FROM python:3.10-slim AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc libpq-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+COPY requirements.txt .
+RUN pip install --no-cache-dir --prefix=/install -r requirements.txt && \
+    pip install --no-cache-dir --prefix=/install gunicorn
+
+# ── Production image ──
+FROM python:3.10-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq5 curl && \
+    rm -rf /var/lib/apt/lists/*
+
+# Non-root user
+RUN groupadd -r patchmaster && useradd -r -g patchmaster -s /sbin/nologin patchmaster
+
+COPY --from=builder /install /usr/local
+
+WORKDIR /app
+COPY . .
+
+# Remove dev/test files from production image
+RUN rm -rf __pycache__ *.pyc test_* .env
+
+RUN chown -R patchmaster:patchmaster /app
+USER patchmaster
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')" || exit 1
+
+# Gunicorn with uvicorn workers for production
+CMD ["gunicorn", "main:app", \
+     "--bind", "0.0.0.0:8000", \
+     "--workers", "4", \
+     "--worker-class", "uvicorn.workers.UvicornWorker", \
+     "--timeout", "120", \
+     "--graceful-timeout", "30", \
+     "--access-logfile", "-", \
+     "--error-logfile", "-", \
+     "--log-level", "info"]

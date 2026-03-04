@@ -23,6 +23,10 @@ SVC_GROUP="patchmaster"
 # Optional: install Prometheus + Grafana alongside PatchMaster
 INSTALL_MONITORING=false
 
+# Optional: SSL certificate paths
+SSL_CERT=""
+SSL_KEY=""
+
 # ── Colors ──
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
 
@@ -44,6 +48,8 @@ usage() {
     echo "  --env FILE           Path to environment config file"
     echo "  --install-dir DIR    Installation directory (default: /opt/patchmaster)"
     echo "  --with-monitoring    Also install Prometheus + Grafana (optional)"
+    echo "  --ssl-cert FILE      Path to SSL fullchain.pem (enables HTTPS)"
+    echo "  --ssl-key FILE       Path to SSL privkey.pem   (requires --ssl-cert)"
     echo "  -h, --help           Show this help"
     exit 0
 }
@@ -54,10 +60,24 @@ while [[ $# -gt 0 ]]; do
         --env)             ENV_FILE="$2"; shift 2 ;;
         --install-dir)     INSTALL_DIR="$2"; shift 2 ;;
         --with-monitoring)  INSTALL_MONITORING=true; shift ;;
+        --ssl-cert)        SSL_CERT="$2"; shift 2 ;;
+        --ssl-key)         SSL_KEY="$2"; shift 2 ;;
         -h|--help)         usage ;;
         *)                 err "Unknown option: $1"; usage ;;
     esac
 done
+
+# Validate SSL arguments
+if [[ -n "$SSL_CERT" && -z "$SSL_KEY" ]]; then
+    err "--ssl-cert requires --ssl-key"; exit 1
+fi
+if [[ -n "$SSL_KEY" && -z "$SSL_CERT" ]]; then
+    err "--ssl-key requires --ssl-cert"; exit 1
+fi
+if [[ -n "$SSL_CERT" ]]; then
+    [[ -f "$SSL_CERT" ]] || { err "SSL cert not found: $SSL_CERT"; exit 1; }
+    [[ -f "$SSL_KEY" ]]  || { err "SSL key not found: $SSL_KEY"; exit 1; }
+fi
 
 # ── Root check ──
 if [[ $EUID -ne 0 ]]; then
@@ -367,8 +387,72 @@ else
     log "  React app built from source"
 fi
 
-# Configure Nginx
-cat > /etc/nginx/sites-available/patchmaster <<NGINX
+# Configure Nginx — with SSL if certs provided
+SSL_ENABLED=false
+if [[ -n "$SSL_CERT" ]]; then
+    cp "$SSL_CERT" "$INSTALL_DIR/certs/fullchain.pem"
+    cp "$SSL_KEY"  "$INSTALL_DIR/certs/privkey.pem"
+    chmod 600 "$INSTALL_DIR/certs/privkey.pem"
+    chmod 644 "$INSTALL_DIR/certs/fullchain.pem"
+    chown "$SVC_USER:$SVC_GROUP" "$INSTALL_DIR/certs/"*.pem
+    SSL_ENABLED=true
+    log "  SSL certificates installed to $INSTALL_DIR/certs/"
+fi
+
+if [[ "$SSL_ENABLED" == "true" ]]; then
+    SSL_PORT="${FRONTEND_SSL_PORT:-443}"
+    cat > /etc/nginx/sites-available/patchmaster <<NGINX
+# HTTP → HTTPS redirect
+server {
+    listen ${FRONTEND_PORT};
+    server_name _;
+    return 301 https://\$host\$request_uri;
+}
+
+# HTTPS server
+server {
+    listen ${SSL_PORT} ssl http2;
+    server_name _;
+
+    ssl_certificate     ${INSTALL_DIR}/certs/fullchain.pem;
+    ssl_certificate_key ${INSTALL_DIR}/certs/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
+    ssl_prefer_server_ciphers on;
+    ssl_session_cache   shared:SSL:10m;
+    ssl_session_timeout 1d;
+
+    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains" always;
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-XSS-Protection "1; mode=block" always;
+
+    root ${INSTALL_DIR}/frontend/build;
+    index index.html;
+
+    location /api/ {
+        proxy_pass http://127.0.0.1:${BACKEND_PORT};
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_connect_timeout 30s;
+        proxy_read_timeout 300s;
+    }
+
+    location /download/ {
+        proxy_pass http://127.0.0.1:${BACKEND_PORT}/static/;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+    }
+
+    location / {
+        try_files \$uri \$uri/ /index.html;
+    }
+}
+NGINX
+else
+    cat > /etc/nginx/sites-available/patchmaster <<NGINX
 server {
     listen ${FRONTEND_PORT};
     server_name _;
@@ -405,6 +489,7 @@ server {
     add_header X-XSS-Protection "1; mode=block" always;
 }
 NGINX
+fi
 
 # Enable the site
 if [[ -d /etc/nginx/sites-enabled ]]; then
@@ -427,6 +512,9 @@ systemctl restart nginx || {
 }
 
 log "  Nginx configured on port $FRONTEND_PORT"
+if [[ "$SSL_ENABLED" == "true" ]]; then
+    log "  HTTPS enabled on port ${SSL_PORT} (HTTP→HTTPS redirect active)"
+fi
 
 ###############################################################################
 # Step 8 (optional): Install Prometheus + Grafana  (--with-monitoring)
@@ -676,15 +764,24 @@ echo ""
 echo "  Install directory:  $INSTALL_DIR"
 echo ""
 echo "  Service URLs:"
+if [[ "$SSL_ENABLED" == "true" ]]; then
+echo "    Web UI:      https://${SERVER_IP}:${SSL_PORT}  (HTTP :${FRONTEND_PORT} → HTTPS redirect)"
+echo "    Backend API: http://${SERVER_IP}:${BACKEND_PORT}/docs"
+else
 echo "    Web UI:      http://${SERVER_IP}:${FRONTEND_PORT}"
 echo "    Backend API: http://${SERVER_IP}:${BACKEND_PORT}/docs"
+fi
 if [[ "$INSTALL_MONITORING" == "true" ]]; then
 echo "    Grafana:     http://${SERVER_IP}:${GRAFANA_PORT}  (${GF_ADMIN_USER}/${GF_ADMIN_PASSWORD})"
 echo "    Prometheus:  http://${SERVER_IP}:${PROMETHEUS_PORT}"
 fi
 echo ""
 echo "  First-time setup:"
+if [[ "$SSL_ENABLED" == "true" ]]; then
+echo "    1. Open https://${SERVER_IP}:${SSL_PORT}"
+else
 echo "    1. Open http://${SERVER_IP}:${FRONTEND_PORT}"
+fi
 echo "    2. Register the admin account"
 echo "    3. Activate your license: Settings → License"
 echo "       Or place license.key file in ${INSTALL_DIR}/license.key"
@@ -695,7 +792,11 @@ echo "    python3 tools/generate-license.py --plan 1-year --customer 'Your Org'"
 echo "    Plans: testing (1 month), 1-year, 2-year, 5-year"
 echo ""
 echo "  Agent install (run on each Linux host):"
+if [[ "$SSL_ENABLED" == "true" ]]; then
+echo "    curl -sS https://${SERVER_IP}:${SSL_PORT}/download/install.sh | sudo bash -s -- ${SERVER_IP}"
+else
 echo "    curl -sS http://${SERVER_IP}:${FRONTEND_PORT}/download/install.sh | sudo bash -s -- ${SERVER_IP}"
+fi
 echo ""
 echo "  Monitoring Integration:"
 if [[ "$INSTALL_MONITORING" == "true" ]]; then
@@ -742,6 +843,17 @@ echo "    tail -f $INSTALL_DIR/logs/backend.log"
 echo "    journalctl -u patchmaster-backend -f"
 echo "    journalctl -u nginx -f"
 echo ""
+if [[ "$SSL_ENABLED" == "true" ]]; then
+    echo "  SSL certificates:"
+    echo "    Cert: $INSTALL_DIR/certs/fullchain.pem"
+    echo "    Key:  $INSTALL_DIR/certs/privkey.pem"
+    echo "    To renew: replace the files and run: systemctl restart nginx"
+    echo ""
+else
+    echo "  Enable HTTPS later:"
+    echo "    Re-run: sudo $0 --ssl-cert /path/to/fullchain.pem --ssl-key /path/to/privkey.pem"
+    echo ""
+fi
 if [[ "$JWT_SECRET" == "change-me-to-a-secure-random-string" ]]; then
     echo -e "  ${YELLOW}WARNING: Change JWT_SECRET in $INSTALL_DIR/backend/.env for production!${NC}"
     echo ""

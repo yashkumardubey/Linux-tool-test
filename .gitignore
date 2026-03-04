@@ -25,6 +25,16 @@ Thumbs.db
 .env
 *.env.local
 
+# SSL certificates (never commit private keys!)
+certs/*.pem
+certs/*.key
+certs/*.crt
+!certs/README.md
+vendor/certs/*.pem
+vendor/certs/*.key
+vendor/certs/*.crt
+!vendor/certs/README.md
+
 # Packaging temp
 packaging/debpkg/
 packaging/dist/

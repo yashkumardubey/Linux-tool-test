@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}PatchMaster{% endblock %} — Customer Manager</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+  <style>
+    :root { --pm-blue: #3b82f6; --pm-green: #22c55e; --pm-red: #ef4444; --pm-yellow: #f59e0b; --pm-purple: #a855f7; }
+    body { background: #0f172a; color: #e2e8f0; font-family: 'Segoe UI', system-ui, sans-serif; }
+    .sidebar { width: 250px; min-height: 100vh; background: #1e293b; border-right: 1px solid #334155;
+               position: fixed; top: 0; left: 0; z-index: 100; padding-top: 0; }
+    .sidebar .brand { padding: 1.25rem 1rem; border-bottom: 1px solid #334155; }
+    .sidebar .brand h5 { margin: 0; color: #fff; font-weight: 700; }
+    .sidebar .brand small { color: #94a3b8; font-size: 0.75rem; }
+    .sidebar .nav-link { color: #94a3b8; padding: 0.6rem 1rem; border-radius: 0.5rem; margin: 2px 8px;
+                         font-size: 0.9rem; transition: all 0.15s; }
+    .sidebar .nav-link:hover { color: #fff; background: #334155; }
+    .sidebar .nav-link.active { color: #fff; background: var(--pm-blue); }
+    .sidebar .nav-link i { width: 24px; text-align: center; margin-right: 8px; }
+    .main-content { margin-left: 250px; padding: 1.5rem 2rem; min-height: 100vh; }
+    .topbar { display: flex; justify-content: space-between; align-items: center;
+              margin-bottom: 1.5rem; padding-bottom: 1rem; border-bottom: 1px solid #334155; }
+    .stat-card { background: #1e293b; border: 1px solid #334155; border-radius: 12px;
+                 padding: 1.25rem; transition: transform 0.15s; }
+    .stat-card:hover { transform: translateY(-2px); }
+    .stat-card .stat-icon { width: 48px; height: 48px; border-radius: 12px; display: flex;
+                            align-items: center; justify-content: center; font-size: 1.4rem; }
+    .stat-card .stat-value { font-size: 1.8rem; font-weight: 700; color: #fff; }
+    .stat-card .stat-label { font-size: 0.8rem; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.5px; }
+    .card-dark { background: #1e293b; border: 1px solid #334155; border-radius: 12px; }
+    .table-dark-custom { --bs-table-bg: transparent; --bs-table-border-color: #334155; }
+    .table-dark-custom th { color: #94a3b8; font-weight: 600; font-size: 0.8rem;
+                            text-transform: uppercase; letter-spacing: 0.5px; border-bottom-width: 2px; }
+    .table-dark-custom td { color: #e2e8f0; vertical-align: middle; }
+    .badge-tier-basic { background: #475569; }
+    .badge-tier-standard { background: #2563eb; }
+    .badge-tier-devops { background: #7c3aed; }
+    .badge-tier-enterprise { background: #dc2626; }
+    .badge-active { background: var(--pm-green); color: #000; }
+    .badge-expired { background: var(--pm-yellow); color: #000; }
+    .badge-revoked { background: var(--pm-red); }
+    .license-key-box { background: #0f172a; border: 1px solid #334155; border-radius: 8px;
+                       padding: 12px; font-family: 'Courier New', monospace; font-size: 0.8rem;
+                       word-break: break-all; color: #22c55e; }
+    .form-control, .form-select { background: #0f172a; border-color: #334155; color: #e2e8f0; }
+    .form-control:focus, .form-select:focus { background: #0f172a; border-color: var(--pm-blue);
+                                               color: #e2e8f0; box-shadow: 0 0 0 0.2rem rgba(59,130,246,0.25); }
+    .btn-primary { background: var(--pm-blue); border-color: var(--pm-blue); }
+    .btn-primary:hover { background: #2563eb; }
+    .empty-state { text-align: center; padding: 3rem; color: #64748b; }
+    .empty-state i { font-size: 3rem; margin-bottom: 1rem; }
+  </style>
+  {% block head %}{% endblock %}
+</head>
+<body>
+  <!-- Sidebar -->
+  <nav class="sidebar d-flex flex-column">
+    <div class="brand">
+      <h5><i class="bi bi-shield-lock-fill text-primary"></i> PatchMaster</h5>
+      <small>Customer Manager v1.0</small>
+    </div>
+    <ul class="nav flex-column mt-3 flex-grow-1">
+      <li class="nav-item">
+        <a class="nav-link {% if request.endpoint == 'dashboard' %}active{% endif %}" href="{{ url_for('dashboard') }}">
+          <i class="bi bi-grid-1x2-fill"></i> Dashboard
+        </a>
+      </li>
+      <li class="nav-item">
+        <a class="nav-link {% if 'customer' in request.endpoint|default('') %}active{% endif %}" href="{{ url_for('customers_list') }}">
+          <i class="bi bi-people-fill"></i> Customers
+        </a>
+      </li>
+      <li class="nav-item">
+        <a class="nav-link {% if 'purchase' in request.endpoint|default('') %}active{% endif %}" href="{{ url_for('purchases_list') }}">
+          <i class="bi bi-cart-fill"></i> Purchases
+        </a>
+      </li>
+      <li class="nav-item">
+        <a class="nav-link {% if 'license' in request.endpoint|default('') %}active{% endif %}" href="{{ url_for('licenses_list') }}">
+          <i class="bi bi-key-fill"></i> Licenses
+        </a>
+      </li>
+      <li class="nav-item">
+        <a class="nav-link {% if 'version' in request.endpoint|default('') %}active{% endif %}" href="{{ url_for('versions_list') }}">
+          <i class="bi bi-box-seam-fill"></i> Tool Versions
+        </a>
+      </li>
+      <li class="nav-item">
+        <a class="nav-link {% if request.endpoint == 'reports' %}active{% endif %}" href="{{ url_for('reports') }}">
+          <i class="bi bi-bar-chart-line-fill"></i> Reports
+        </a>
+      </li>
+      <li class="nav-item">
+        <a class="nav-link {% if request.endpoint == 'activity_log' %}active{% endif %}" href="{{ url_for('activity_log') }}">
+          <i class="bi bi-clock-history"></i> Activity Log
+        </a>
+      </li>
+    </ul>
+    <div class="p-3 border-top" style="border-color: #334155 !important;">
+      <div class="d-flex align-items-center justify-content-between">
+        <small class="text-muted"><i class="bi bi-person-circle"></i> {{ session.get('user', 'admin') }}</small>
+        <a href="{{ url_for('logout') }}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-box-arrow-right"></i></a>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Main content -->
+  <div class="main-content">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        {% for category, message in messages %}
+          <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+            {{ message }}
+            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+          </div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+
+    {% block content %}{% endblock %}
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>
