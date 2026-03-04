@@ -19,6 +19,8 @@ from api.notifications import router as notifications_router
 from api.metrics import router as metrics_router, MetricsMiddleware
 from api.zabbix import router as zabbix_router
 from api.license_router import router as license_router
+from api.cicd import router as cicd_router
+from api.git_integration import router as git_router
 from license import get_license_info
 
 
@@ -50,6 +52,16 @@ class LicenseMiddleware(BaseHTTPMiddleware):
         "/metrics",
     )
 
+    # Map API path prefixes to required feature names for tier enforcement
+    FEATURE_PATH_MAP = {
+        "/api/cicd": "cicd",
+        "/api/git": "git",
+        "/api/cve": "cve",
+        "/api/compliance": "compliance",
+        "/api/audit": "audit",
+        "/api/notifications": "notifications",
+    }
+
     async def dispatch(self, request, call_next):
         path = request.url.path
         # Allow exempt paths
@@ -73,6 +85,20 @@ class LicenseMiddleware(BaseHTTPMiddleware):
                     "license_status": "expired",
                 },
             )
+        # Tier-based feature enforcement
+        licensed_features = info.get("features", [])
+        for prefix, feature in self.FEATURE_PATH_MAP.items():
+            if path.startswith(prefix) and feature not in licensed_features:
+                tier = info.get("tier_label", info.get("tier", "Unknown"))
+                return JSONResponse(
+                    status_code=403,
+                    content={
+                        "detail": f"Feature '{feature}' is not included in your {tier} license. Upgrade to access this feature.",
+                        "license_status": "tier_restricted",
+                        "required_feature": feature,
+                        "current_tier": info.get("tier", ""),
+                    },
+                )
         return await call_next(request)
 
 
@@ -130,3 +156,7 @@ app.include_router(metrics_router)
 app.include_router(zabbix_router)
 # License management
 app.include_router(license_router)
+# CI/CD pipelines
+app.include_router(cicd_router)
+# Git repository integration
+app.include_router(git_router)

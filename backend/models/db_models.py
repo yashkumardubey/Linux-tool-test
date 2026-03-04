@@ -262,3 +262,81 @@ class NotificationChannel(Base):
     events = Column(JSON, default=list)  # ["patch.failed", "cve.critical", "agent.offline"]
     is_enabled = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+# ── CI/CD Pipelines ──
+
+class CICDPipelineStatus(str, enum.Enum):
+    active = "active"
+    paused = "paused"
+    disabled = "disabled"
+
+
+class CICDPipeline(Base):
+    __tablename__ = "cicd_pipelines"
+    id = Column(Integer, primary_key=True)
+    name = Column(String(200), nullable=False)
+    description = Column(Text, default="")
+    tool = Column(String(30), nullable=False)  # "jenkins", "gitlab", "github", "custom"
+    server_url = Column(String(500), nullable=False)  # e.g. http://jenkins:8080
+    auth_type = Column(String(20), default="token")  # "token", "basic", "none"
+    auth_credentials = Column(JSON, default=dict)  # {"token": "...", "user": "...", "password": "..."}
+    job_path = Column(String(500), default="")  # Jenkins job path / GitLab project path
+    script_type = Column(String(20), default="groovy")  # "groovy", "yaml", "shell"
+    script_content = Column(Text, default="")  # Pipeline script
+    webhook_secret = Column(String(200), default="")  # Shared secret for webhook validation
+    trigger_events = Column(JSON, default=list)  # ["patch.success", "patch.failed", "cve.critical"]
+    status = Column(String(20), default="active")
+    last_triggered = Column(DateTime, nullable=True)
+    created_by = Column(String(100), default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    builds = relationship("CICDBuild", back_populates="pipeline", cascade="all, delete-orphan")
+
+
+class CICDBuildStatus(str, enum.Enum):
+    pending = "pending"
+    running = "running"
+    success = "success"
+    failed = "failed"
+    aborted = "aborted"
+
+
+class CICDBuild(Base):
+    __tablename__ = "cicd_builds"
+    id = Column(Integer, primary_key=True)
+    pipeline_id = Column(Integer, ForeignKey("cicd_pipelines.id", ondelete="CASCADE"), nullable=False)
+    build_number = Column(Integer, default=0)
+    status = Column(String(20), default="pending")
+    trigger_type = Column(String(30), default="manual")  # "manual", "webhook", "event", "schedule"
+    trigger_info = Column(JSON, default=dict)  # {"event": "patch.success", "host": "..."}
+    duration_seconds = Column(Integer, nullable=True)
+    output = Column(Text, default="")
+    external_url = Column(String(500), default="")  # Link to Jenkins build page
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    pipeline = relationship("CICDPipeline", back_populates="builds")
+
+
+# ── Git Repositories ──
+
+class GitRepository(Base):
+    __tablename__ = "git_repositories"
+    id = Column(Integer, primary_key=True)
+    name = Column(String(200), nullable=False)
+    provider = Column(String(30), nullable=False)  # "github", "gitlab", "bitbucket", "gitbucket"
+    server_url = Column(String(500), nullable=False)  # API base: https://api.github.com, https://gitlab.com, etc.
+    repo_full_name = Column(String(300), nullable=False)  # "owner/repo"
+    default_branch = Column(String(100), default="main")
+    auth_token = Column(String(500), default="")  # PAT / App token
+    webhook_secret = Column(String(200), default="")
+    webhook_id = Column(String(100), default="")  # Remote webhook ID for management
+    is_active = Column(Boolean, default=True)
+    last_synced = Column(DateTime, nullable=True)
+    repo_meta = Column(JSON, default=dict)  # cached repo info: stars, language, visibility, etc.
+    created_by = Column(String(100), default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

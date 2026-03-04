@@ -9,7 +9,7 @@ import json
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 
 LICENSE_SIGN_KEY = os.getenv(
     "LICENSE_SIGN_KEY", "PatchMaster-License-SignKey-2026-Secure"
@@ -27,6 +27,44 @@ _CACHE_TTL_SECONDS = 60  # Re-read file every 60s
 class LicenseError(Exception):
     """Raised when the license is invalid or expired."""
     pass
+
+
+# ── Feature / Tier definitions ──────────────────────────────────
+ALL_FEATURES: List[str] = [
+    "dashboard", "compliance", "hosts", "groups", "patches",
+    "snapshots", "compare", "offline", "schedules", "cve",
+    "jobs", "audit", "notifications", "users", "license",
+    "cicd", "git", "onboarding", "settings",
+]
+
+TIER_FEATURES: dict = {
+    "basic": [
+        "dashboard", "hosts", "groups", "patches",
+        "snapshots", "compare", "offline", "schedules",
+        "jobs", "onboarding",
+    ],
+    "standard": [
+        "dashboard", "hosts", "groups", "patches",
+        "snapshots", "compare", "offline", "schedules",
+        "jobs", "onboarding",
+        "compliance", "cve", "audit", "notifications", "users",
+    ],
+    "devops": [
+        "dashboard", "hosts", "groups", "patches",
+        "snapshots", "compare", "offline", "schedules",
+        "jobs", "onboarding",
+        "compliance", "cve", "audit", "notifications", "users",
+        "cicd", "git",
+    ],
+    "enterprise": ALL_FEATURES[:],
+}
+
+TIER_LABELS: dict = {
+    "basic": "Basic",
+    "standard": "Standard",
+    "devops": "DevOps",
+    "enterprise": "Enterprise",
+}
 
 
 def _verify_signature(payload_b64: str, signature: str) -> bool:
@@ -139,6 +177,10 @@ def get_license_info(force_refresh: bool = False) -> dict:
     is_expired = now >= expires_at
     days_remaining = max(0, (expires_at - now).days)
 
+    # Resolve allowed features from tier/payload
+    tier = payload.get("tier", "enterprise")
+    licensed_features = payload.get("features", TIER_FEATURES.get(tier, ALL_FEATURES))
+
     info = {
         "valid": True,
         "expired": is_expired,
@@ -152,6 +194,12 @@ def get_license_info(force_refresh: bool = False) -> dict:
         "issued_at_dt": issued_at,
         "days_remaining": days_remaining,
         "max_hosts": payload.get("max_hosts", 0),
+        "tier": tier,
+        "tier_label": payload.get("tier_label", TIER_LABELS.get(tier, tier.title())),
+        "features": licensed_features,
+        "license_id": payload.get("license_id", "legacy"),
+        "version_compat": payload.get("version_compat", "2.x"),
+        "tool_version": payload.get("tool_version", "1.x"),
     }
 
     _cached_license = info
@@ -170,3 +218,13 @@ def is_license_active() -> bool:
     """Quick check: is the license valid and not expired?"""
     info = get_license_info()
     return info.get("valid", False) and not info.get("expired", True)
+
+
+def get_licensed_features() -> List[str]:
+    """Return the list of features allowed by the current license.
+    Returns all features if no license (enforcement is in middleware anyway).
+    """
+    info = get_license_info()
+    if info.get("valid") and not info.get("expired"):
+        return info.get("features", ALL_FEATURES[:])
+    return ALL_FEATURES[:]

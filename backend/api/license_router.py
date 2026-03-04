@@ -1,6 +1,7 @@
-"""License management API — view status, activate, deactivate."""
+"""License management API — view status, activate, deactivate, tier info."""
 import os
 from pathlib import Path
+from typing import List
 
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
@@ -13,6 +14,9 @@ from license import (
     invalidate_cache,
     LicenseError,
     LICENSE_FILE,
+    TIER_FEATURES,
+    TIER_LABELS,
+    ALL_FEATURES,
 )
 
 router = APIRouter(prefix="/api/license", tags=["License"])
@@ -33,6 +37,12 @@ class LicenseResponse(BaseModel):
     expires_at: str = ""
     days_remaining: int = 0
     max_hosts: int = 0
+    tier: str = ""
+    tier_label: str = ""
+    features: List[str] = []
+    license_id: str = ""
+    version_compat: str = ""
+    tool_version: str = ""
     error: str = ""
 
 
@@ -51,6 +61,12 @@ async def license_status():
         expires_at=info.get("expires_at", ""),
         days_remaining=info.get("days_remaining", 0),
         max_hosts=info.get("max_hosts", 0),
+        tier=info.get("tier", ""),
+        tier_label=info.get("tier_label", ""),
+        features=info.get("features", []),
+        license_id=info.get("license_id", ""),
+        version_compat=info.get("version_compat", ""),
+        tool_version=info.get("tool_version", ""),
         error=info.get("error", ""),
     )
 
@@ -88,6 +104,12 @@ async def activate_license(req: ActivateRequest, user=Depends(require_role(UserR
         expires_at=info.get("expires_at", ""),
         days_remaining=info.get("days_remaining", 0),
         max_hosts=info.get("max_hosts", 0),
+        tier=info.get("tier", ""),
+        tier_label=info.get("tier_label", ""),
+        features=info.get("features", []),
+        license_id=info.get("license_id", ""),
+        version_compat=info.get("version_compat", ""),
+        tool_version=info.get("tool_version", ""),
         error=info.get("error", ""),
     )
 
@@ -101,3 +123,17 @@ async def deactivate_license(user=Depends(require_role(UserRole.admin))):
 
     invalidate_cache()
     return {"detail": "License deactivated"}
+
+
+@router.get("/tiers")
+async def list_tiers():
+    """Return all tier definitions and their features (public, no auth)."""
+    tiers = []
+    for key in ("basic", "standard", "devops", "enterprise"):
+        tiers.append({
+            "tier": key,
+            "label": TIER_LABELS.get(key, key.title()),
+            "features": TIER_FEATURES.get(key, []),
+            "feature_count": len(TIER_FEATURES.get(key, [])),
+        })
+    return {"tiers": tiers, "all_features": ALL_FEATURES}

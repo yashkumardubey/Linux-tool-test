@@ -66,6 +66,7 @@ function App() {
     ...(hasPerm('notifications') ? [{ key: 'notifications', label: 'Notifications', icon: '🔔' }] : []),
     ...(hasPerm('users') ? [{ key: 'users', label: 'User Management', icon: '👤' }] : []),
     ...(hasPerm('license') ? [{ key: 'license', label: 'License', icon: '🔑' }] : []),
+    ...(hasPerm('cicd') ? [{ key: 'cicd', label: 'CI/CD Pipelines', icon: '🚀' }] : []),
     { key: 'monitoring', label: 'Monitoring Tools', icon: '📈' },
     { key: 'onboarding', label: 'Onboarding', icon: '🚀' },
     { key: 'settings', label: 'Settings', icon: '🔧' },
@@ -132,6 +133,7 @@ function App() {
           {page === 'notifications' && <NotificationsPage />}
           {page === 'users' && hasPerm('users') && <UsersPage />}
           {page === 'license' && hasPerm('license') && <LicensePage licenseInfo={licenseInfo} onRefresh={fetchAll} />}
+          {page === 'cicd' && hasPerm('cicd') && <CICDPage />}
           {page === 'monitoring' && <MonitoringToolsPage />}
           {page === 'onboarding' && <OnboardingPage />}
           {page === 'settings' && <SettingsPage health={health} hosts={hosts} jobs={jobs} />}
@@ -1130,6 +1132,760 @@ function UsersPage() {
   );
 }
 
+/* ─── CI/CD Pipelines ─── */
+function CICDPage() {
+  const [tab, setTab] = useState('pipelines');
+  const [pipelines, setPipelines] = useState([]);
+  const [builds, setBuilds] = useState([]);
+  const [templates, setTemplates] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [editPipeline, setEditPipeline] = useState(null);
+  const [selectedPipeline, setSelectedPipeline] = useState(null);
+  const [scriptView, setScriptView] = useState(null);
+  const [form, setForm] = useState({ name:'', description:'', tool:'jenkins', server_url:'', auth_type:'token', auth_user:'', auth_token:'', job_path:'', script_type:'groovy', script_content:'', trigger_events:[] });
+  const [msg, setMsg] = useState('');
+  const [triggerParams, setTriggerParams] = useState('');
+
+  /* ── Git Repos state ── */
+  const [gitRepos, setGitRepos] = useState([]);
+  const [gitLoading, setGitLoading] = useState(false);
+  const [showRepoForm, setShowRepoForm] = useState(false);
+  const [repoForm, setRepoForm] = useState({ name:'', provider:'github', server_url:'', repo_full_name:'', default_branch:'main', auth_token:'' });
+  const [selectedRepo, setSelectedRepo] = useState(null);
+  const [repoBranches, setRepoBranches] = useState([]);
+  const [repoCommits, setRepoCommits] = useState([]);
+  const [repoPulls, setRepoPulls] = useState([]);
+  const [repoTags, setRepoTags] = useState([]);
+  const [repoTree, setRepoTree] = useState([]);
+  const [repoFile, setRepoFile] = useState(null);
+  const [repoSubTab, setRepoSubTab] = useState('info');
+  const [treePath, setTreePath] = useState('');
+  const [discoverResults, setDiscoverResults] = useState(null);
+  const [discoverLoading, setDiscoverLoading] = useState(false);
+
+  const fetchPipelines = useCallback(() => {
+    setLoading(true);
+    apiFetch(`${API}/api/cicd/pipelines`).then(r=>r.json()).then(d=>{setPipelines(d);setLoading(false);}).catch(()=>setLoading(false));
+  }, []);
+
+  const fetchBuilds = useCallback((pipelineId) => {
+    const url = pipelineId ? `${API}/api/cicd/builds?pipeline_id=${pipelineId}` : `${API}/api/cicd/builds`;
+    apiFetch(url).then(r=>r.json()).then(setBuilds).catch(()=>{});
+  }, []);
+
+  const fetchTemplates = useCallback(() => {
+    apiFetch(`${API}/api/cicd/templates`).then(r=>r.json()).then(setTemplates).catch(()=>{});
+  }, []);
+
+  useEffect(() => { fetchPipelines(); fetchBuilds(); fetchTemplates(); fetchGitRepos(); }, [fetchPipelines, fetchBuilds, fetchTemplates]);
+
+  /* ── Git Repos functions ── */
+  const fetchGitRepos = useCallback(() => {
+    setGitLoading(true);
+    apiFetch(`${API}/api/git/repos`).then(r=>r.json()).then(d=>{setGitRepos(d);setGitLoading(false);}).catch(()=>setGitLoading(false));
+  }, []);
+
+  const saveRepo = async () => {
+    setMsg('');
+    try {
+      const r = await apiFetch(`${API}/api/git/repos`, { method:'POST', body: JSON.stringify(repoForm) });
+      if (!r.ok) { const d = await r.json(); setMsg(d.detail || 'Save failed'); return; }
+      setMsg('Repository connected!'); setShowRepoForm(false);
+      setRepoForm({ name:'', provider:'github', server_url:'', repo_full_name:'', default_branch:'main', auth_token:'' });
+      fetchGitRepos();
+    } catch { setMsg('Error saving repository'); }
+  };
+
+  const deleteRepo = async (id) => { if (!window.confirm('Remove this repository?')) return; await apiFetch(`${API}/api/git/repos/${id}`, { method:'DELETE' }); fetchGitRepos(); setSelectedRepo(null); };
+
+  const testRepoConn = async (id) => { setMsg('Testing...'); const r = await apiFetch(`${API}/api/git/repos/${id}/test`, { method:'POST' }); const d = await r.json(); setMsg(d.ok ? `✅ ${d.message}` : `❌ ${d.message}`); if (d.ok) fetchGitRepos(); };
+
+  const syncRepo = async (id) => { setMsg('Syncing...'); const r = await apiFetch(`${API}/api/git/repos/${id}/sync`, { method:'POST' }); const d = await r.json(); setMsg(d.ok ? '✅ Synced!' : `❌ ${d.message||'Sync failed'}`); fetchGitRepos(); };
+
+  const registerWebhook = async (id) => { setMsg('Registering webhook...'); const r = await apiFetch(`${API}/api/git/repos/${id}/webhook/register`, { method:'POST' }); const d = await r.json(); setMsg(d.ok ? `✅ ${d.message}` : `❌ ${d.message}`); fetchGitRepos(); };
+
+  const removeWebhook = async (id) => { const r = await apiFetch(`${API}/api/git/repos/${id}/webhook`, { method:'DELETE' }); const d = await r.json(); setMsg(d.ok ? '✅ Webhook removed' : `❌ ${d.message}`); fetchGitRepos(); };
+
+  const loadRepoBranches = async (id) => { apiFetch(`${API}/api/git/repos/${id}/branches`).then(r=>r.json()).then(setRepoBranches).catch(()=>setRepoBranches([])); };
+  const loadRepoCommits = async (id, branch) => { const q = branch ? `?branch=${branch}` : ''; apiFetch(`${API}/api/git/repos/${id}/commits${q}`).then(r=>r.json()).then(setRepoCommits).catch(()=>setRepoCommits([])); };
+  const loadRepoPulls = async (id) => { apiFetch(`${API}/api/git/repos/${id}/pulls`).then(r=>r.json()).then(setRepoPulls).catch(()=>setRepoPulls([])); };
+  const loadRepoTags = async (id) => { apiFetch(`${API}/api/git/repos/${id}/tags`).then(r=>r.json()).then(setRepoTags).catch(()=>setRepoTags([])); };
+  const loadRepoTree = async (id, path) => { const q = path ? `?path=${encodeURIComponent(path)}` : ''; apiFetch(`${API}/api/git/repos/${id}/tree${q}`).then(r=>r.json()).then(setRepoTree).catch(()=>setRepoTree([])); };
+  const loadRepoFile = async (id, path) => { apiFetch(`${API}/api/git/repos/${id}/file?path=${encodeURIComponent(path)}`).then(r=>r.json()).then(setRepoFile).catch(()=>setRepoFile(null)); };
+
+  const openRepoDetail = (repo) => {
+    setSelectedRepo(repo); setRepoSubTab('info');
+    setRepoBranches([]); setRepoCommits([]); setRepoPulls([]); setRepoTags([]); setRepoTree([]); setRepoFile(null); setTreePath('');
+    loadRepoBranches(repo.id); loadRepoCommits(repo.id); loadRepoPulls(repo.id);
+  };
+
+  const discoverRepos = async () => {
+    setDiscoverLoading(true); setDiscoverResults(null);
+    const q = `?provider=${repoForm.provider}&token=${encodeURIComponent(repoForm.auth_token)}${repoForm.server_url ? '&server_url=' + encodeURIComponent(repoForm.server_url) : ''}`;
+    const r = await apiFetch(`${API}/api/git/discover${q}`); const d = await r.json();
+    setDiscoverResults(d); setDiscoverLoading(false);
+  };
+
+  const resetForm = () => setForm({ name:'', description:'', tool:'jenkins', server_url:'', auth_type:'token', auth_user:'', auth_token:'', job_path:'', script_type:'groovy', script_content:'', trigger_events:[] });
+
+  const savePipeline = async () => {
+    setMsg('');
+    const payload = {
+      name: form.name, description: form.description, tool: form.tool,
+      server_url: form.server_url, auth_type: form.auth_type,
+      auth_credentials: form.auth_type !== 'none' ? { user: form.auth_user, token: form.auth_token } : {},
+      job_path: form.job_path, script_type: form.script_type,
+      script_content: form.script_content, trigger_events: form.trigger_events,
+    };
+    try {
+      const url = editPipeline ? `${API}/api/cicd/pipelines/${editPipeline.id}` : `${API}/api/cicd/pipelines`;
+      const method = editPipeline ? 'PUT' : 'POST';
+      const r = await apiFetch(url, { method, body: JSON.stringify(payload) });
+      if (!r.ok) { const d = await r.json(); setMsg(d.detail || 'Save failed'); return; }
+      setMsg('Pipeline saved!');
+      setShowForm(false); setEditPipeline(null); resetForm(); fetchPipelines();
+    } catch { setMsg('Error saving pipeline'); }
+  };
+
+  const deletePipeline = async (id) => {
+    if (!window.confirm('Delete this pipeline and all its builds?')) return;
+    await apiFetch(`${API}/api/cicd/pipelines/${id}`, { method:'DELETE' });
+    fetchPipelines(); fetchBuilds();
+  };
+
+  const triggerBuild = async (id) => {
+    setMsg('');
+    let params = {};
+    if (triggerParams.trim()) { try { params = JSON.parse(triggerParams); } catch { setMsg('Invalid JSON parameters'); return; } }
+    const r = await apiFetch(`${API}/api/cicd/pipelines/${id}/trigger`, { method:'POST', body: JSON.stringify({ parameters: params }) });
+    const d = await r.json();
+    if (r.ok) { setMsg(`Build triggered — status: ${d.status}`); fetchBuilds(selectedPipeline); fetchPipelines(); }
+    else { setMsg(d.detail || 'Trigger failed'); }
+  };
+
+  const testConnection = async (id) => {
+    setMsg('Testing...');
+    const r = await apiFetch(`${API}/api/cicd/pipelines/${id}/test`, { method:'POST' });
+    const d = await r.json();
+    setMsg(d.ok ? `✅ ${d.message}` : `❌ ${d.message}`);
+  };
+
+  const toggleStatus = async (p) => {
+    const newStatus = p.status === 'active' ? 'paused' : 'active';
+    await apiFetch(`${API}/api/cicd/pipelines/${p.id}`, { method:'PUT', body: JSON.stringify({ status: newStatus }) });
+    fetchPipelines();
+  };
+
+  const startEdit = (p) => {
+    const creds = p.auth_credentials || {};
+    setForm({
+      name: p.name, description: p.description, tool: p.tool,
+      server_url: p.server_url, auth_type: p.auth_type,
+      auth_user: creds.user || '', auth_token: creds.token || creds.password || '',
+      job_path: p.job_path, script_type: p.script_type,
+      script_content: p.script_content, trigger_events: p.trigger_events || [],
+    });
+    setEditPipeline(p); setShowForm(true);
+  };
+
+  const loadTemplate = (type) => {
+    if (templates[type]) {
+      setForm(f => ({ ...f, script_type: type, script_content: templates[type].content }));
+    }
+  };
+
+  const statusBadge = (s) => {
+    const map = { success:'badge-success', failed:'badge-danger', running:'badge-info', pending:'badge-warning', aborted:'badge-secondary', active:'badge-success', paused:'badge-warning', disabled:'badge-danger' };
+    return <span className={`badge ${map[s]||'badge-secondary'}`}>{s}</span>;
+  };
+
+  const triggerEvents = ['patch.success','patch.failed','cve.critical','snapshot.created','schedule.executed','compliance.changed'];
+
+  return (
+    <div>
+      {/* Tab nav */}
+      <div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap'}}>
+        {[{k:'pipelines',l:'🚀 Pipelines'},{k:'repositories',l:'📦 Repositories'},{k:'builds',l:'📋 Builds'},{k:'scripts',l:'📜 Templates'}].map(t => (
+          <button key={t.k} className={`btn ${tab===t.k?'btn-primary':'btn-secondary'}`} onClick={()=>{setTab(t.k);if(t.k==='builds')fetchBuilds(selectedPipeline);if(t.k==='repositories')fetchGitRepos();}}>{t.l}</button>
+        ))}
+      </div>
+      {msg && <div style={{padding:'8px 16px',borderRadius:8,background:msg.includes('✅')||msg.includes('saved')||msg.includes('triggered')?'rgba(40,167,69,0.15)':'rgba(220,53,69,0.15)',marginBottom:12,fontWeight:500}}>{msg}</div>}
+
+      {/* ── Pipelines Tab ── */}
+      {tab === 'pipelines' && (
+        <div>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16}}>
+            <h3 style={{margin:0}}>🚀 CI/CD Pipelines</h3>
+            {hasRole('admin','operator') && <button className="btn btn-primary" onClick={()=>{resetForm();setEditPipeline(null);setShowForm(!showForm);}}>
+              {showForm ? 'Cancel' : '+ New Pipeline'}
+            </button>}
+          </div>
+
+          {/* Create/Edit form */}
+          {showForm && (
+            <div className="card" style={{marginBottom:16,border:'2px solid #3b82f6'}}>
+              <h4 style={{marginTop:0}}>{editPipeline ? 'Edit Pipeline' : 'Create Pipeline'}</h4>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
+                <div>
+                  <label style={{fontSize:12,fontWeight:600}}>Pipeline Name *</label>
+                  <input className="input" placeholder="e.g. Production Patch Pipeline" value={form.name} onChange={e=>setForm(f=>({...f,name:e.target.value}))} />
+                </div>
+                <div>
+                  <label style={{fontSize:12,fontWeight:600}}>CI/CD Tool *</label>
+                  <select className="input" value={form.tool} onChange={e=>setForm(f=>({...f,tool:e.target.value}))}>
+                    <option value="jenkins">Jenkins</option>
+                    <option value="gitlab">GitLab CI</option>
+                    <option value="github">GitHub Actions</option>
+                    <option value="custom">Custom Webhook</option>
+                  </select>
+                </div>
+                <div style={{gridColumn:'1/-1'}}>
+                  <label style={{fontSize:12,fontWeight:600}}>Description</label>
+                  <input className="input" placeholder="Pipeline description" value={form.description} onChange={e=>setForm(f=>({...f,description:e.target.value}))} />
+                </div>
+                <div>
+                  <label style={{fontSize:12,fontWeight:600}}>{form.tool === 'jenkins' ? 'Jenkins Server URL *' : 'Server / Webhook URL *'}</label>
+                  <input className="input" placeholder={form.tool==='jenkins'?'http://jenkins.example.com:8080':'https://...'} value={form.server_url} onChange={e=>setForm(f=>({...f,server_url:e.target.value}))} />
+                </div>
+                <div>
+                  <label style={{fontSize:12,fontWeight:600}}>{form.tool === 'jenkins' ? 'Job Path *' : 'Project / Repo Path'}</label>
+                  <input className="input" placeholder={form.tool==='jenkins'?'my-folder/my-job':'owner/repo'} value={form.job_path} onChange={e=>setForm(f=>({...f,job_path:e.target.value}))} />
+                </div>
+                <div>
+                  <label style={{fontSize:12,fontWeight:600}}>Auth Type</label>
+                  <select className="input" value={form.auth_type} onChange={e=>setForm(f=>({...f,auth_type:e.target.value}))}>
+                    <option value="token">API Token</option>
+                    <option value="basic">Basic Auth</option>
+                    <option value="none">None</option>
+                  </select>
+                </div>
+                {form.auth_type !== 'none' && (<>
+                  <div>
+                    <label style={{fontSize:12,fontWeight:600}}>Username</label>
+                    <input className="input" placeholder="Username" value={form.auth_user} onChange={e=>setForm(f=>({...f,auth_user:e.target.value}))} />
+                  </div>
+                  <div>
+                    <label style={{fontSize:12,fontWeight:600}}>{form.auth_type==='token'?'API Token':'Password'}</label>
+                    <input className="input" type="password" placeholder="Token / Password" value={form.auth_token} onChange={e=>setForm(f=>({...f,auth_token:e.target.value}))} />
+                  </div>
+                </>)}
+              </div>
+
+              {/* Script editor */}
+              <div style={{marginTop:16}}>
+                <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:8}}>
+                  <label style={{fontSize:12,fontWeight:600,margin:0}}>Pipeline Script</label>
+                  <select className="input" value={form.script_type} onChange={e=>setForm(f=>({...f,script_type:e.target.value}))} style={{width:140}}>
+                    <option value="groovy">Groovy (Jenkinsfile)</option>
+                    <option value="yaml">YAML</option>
+                    <option value="shell">Shell</option>
+                  </select>
+                  <button className="btn btn-sm btn-secondary" onClick={()=>loadTemplate(form.script_type)}>Load Template</button>
+                </div>
+                <textarea className="input" style={{width:'100%',minHeight:220,fontFamily:'monospace',fontSize:12,whiteSpace:'pre',overflowWrap:'normal',overflowX:'auto'}}
+                  value={form.script_content} onChange={e=>setForm(f=>({...f,script_content:e.target.value}))}
+                  placeholder={`Paste your ${form.script_type} pipeline script here...`} />
+              </div>
+
+              {/* Trigger events */}
+              <div style={{marginTop:12}}>
+                <label style={{fontSize:12,fontWeight:600}}>Auto-Trigger on Events</label>
+                <div style={{display:'flex',flexWrap:'wrap',gap:8,marginTop:4}}>
+                  {triggerEvents.map(ev => (
+                    <label key={ev} style={{display:'flex',alignItems:'center',gap:4,fontSize:12,cursor:'pointer'}}>
+                      <input type="checkbox" checked={form.trigger_events.includes(ev)}
+                        onChange={e => setForm(f => ({...f, trigger_events: e.target.checked ? [...f.trigger_events, ev] : f.trigger_events.filter(x=>x!==ev)}))} />
+                      {ev}
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              <div style={{marginTop:16,display:'flex',gap:8}}>
+                <button className="btn btn-primary" onClick={savePipeline}>💾 Save Pipeline</button>
+                <button className="btn btn-secondary" onClick={()=>{setShowForm(false);setEditPipeline(null);resetForm();}}>Cancel</button>
+              </div>
+            </div>
+          )}
+
+          {/* Pipeline list */}
+          {loading ? <p>Loading...</p> : pipelines.length === 0 ? (
+            <div className="card" style={{textAlign:'center',padding:40,color:'#9ca3af'}}>
+              <p style={{fontSize:40,margin:0}}>🚀</p>
+              <p style={{fontWeight:600}}>No CI/CD Pipelines configured yet</p>
+              <p>Create a pipeline to integrate with Jenkins, GitLab CI, or GitHub Actions</p>
+            </div>
+          ) : (
+            <div style={{display:'grid',gap:12}}>
+              {pipelines.map(p => (
+                <div key={p.id} className="card" style={{border: p.status==='active' ? '1px solid rgba(40,167,69,0.3)' : '1px solid rgba(108,117,125,0.3)'}}>
+                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
+                    <div>
+                      <div style={{display:'flex',alignItems:'center',gap:10}}>
+                        <span style={{fontSize:22}}>{p.tool==='jenkins'?'🔧':p.tool==='gitlab'?'🦊':p.tool==='github'?'🐙':'🔗'}</span>
+                        <div>
+                          <h4 style={{margin:0}}>{p.name}</h4>
+                          <span style={{fontSize:12,color:'#9ca3af'}}>{p.tool.charAt(0).toUpperCase()+p.tool.slice(1)} • {p.server_url} • {p.job_path || 'No job path'}</span>
+                        </div>
+                      </div>
+                      {p.description && <p style={{margin:'6px 0 0',fontSize:13,color:'#9ca3af'}}>{p.description}</p>}
+                    </div>
+                    <div style={{display:'flex',gap:6,alignItems:'center'}}>
+                      {statusBadge(p.status)}
+                      <span className="badge badge-info" style={{fontSize:10}}>{p.build_count} builds</span>
+                      {p.last_build_status && statusBadge(p.last_build_status)}
+                    </div>
+                  </div>
+
+                  {/* Webhook URL */}
+                  <div style={{marginTop:10,padding:8,borderRadius:6,background:'rgba(59,130,246,0.08)',fontSize:12}}>
+                    <strong>Webhook URL:</strong> <code style={{wordBreak:'break-all'}}>{p.webhook_url}</code>
+                    <br/><strong>Secret:</strong> <code>{p.webhook_secret}</code>
+                  </div>
+
+                  {/* Trigger events */}
+                  {p.trigger_events && p.trigger_events.length > 0 && (
+                    <div style={{marginTop:8,fontSize:12}}>
+                      <strong>Auto-triggers:</strong> {p.trigger_events.map(e=><span key={e} className="badge badge-info" style={{fontSize:10,marginLeft:4}}>{e}</span>)}
+                    </div>
+                  )}
+
+                  {/* Actions */}
+                  <div style={{marginTop:12,display:'flex',gap:6,flexWrap:'wrap'}}>
+                    {hasRole('admin','operator') && p.status === 'active' && (
+                      <button className="btn btn-sm btn-primary" onClick={()=>triggerBuild(p.id)}>▶ Trigger Build</button>
+                    )}
+                    <button className="btn btn-sm btn-secondary" onClick={()=>testConnection(p.id)}>🔌 Test Connection</button>
+                    <button className="btn btn-sm btn-secondary" onClick={()=>{setSelectedPipeline(p.id);setTab('builds');fetchBuilds(p.id);}}>📋 Builds</button>
+                    <button className="btn btn-sm btn-secondary" onClick={()=>setScriptView(scriptView===p.id?null:p.id)}>📜 {scriptView===p.id?'Hide':'View'} Script</button>
+                    {hasRole('admin','operator') && <button className="btn btn-sm btn-warning" onClick={()=>startEdit(p)}>✏️ Edit</button>}
+                    {hasRole('admin','operator') && <button className="btn btn-sm btn-secondary" onClick={()=>toggleStatus(p)}>{p.status==='active'?'⏸ Pause':'▶ Resume'}</button>}
+                    {hasRole('admin') && <button className="btn btn-sm btn-danger" onClick={()=>deletePipeline(p.id)}>🗑 Delete</button>}
+                  </div>
+
+                  {/* Trigger parameters (inline) */}
+                  {hasRole('admin','operator') && p.status === 'active' && (
+                    <div style={{marginTop:8}}>
+                      <input className="input" style={{fontSize:12,width:300}} placeholder='Trigger params JSON e.g. {"branch":"main"}' value={triggerParams} onChange={e=>setTriggerParams(e.target.value)} />
+                    </div>
+                  )}
+
+                  {/* Script viewer */}
+                  {scriptView === p.id && (
+                    <div style={{marginTop:10}}>
+                      <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
+                        <span className="badge badge-info">{p.script_type}</span>
+                        <span style={{fontSize:12,color:'#9ca3af'}}>Pipeline Script</span>
+                      </div>
+                      <pre className="code-block" style={{maxHeight:400,overflow:'auto',fontSize:11}}>{p.script_content || '(no script)'}</pre>
+                    </div>
+                  )}
+
+                  {p.last_triggered && <div style={{marginTop:8,fontSize:11,color:'#9ca3af'}}>Last triggered: {new Date(p.last_triggered).toLocaleString()}</div>}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Builds Tab ── */}
+      {tab === 'builds' && (
+        <div>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16}}>
+            <h3 style={{margin:0}}>📋 Build History</h3>
+            <div style={{display:'flex',gap:8,alignItems:'center'}}>
+              <select className="input" style={{width:200}} value={selectedPipeline||''} onChange={e=>{const v=e.target.value?parseInt(e.target.value):null;setSelectedPipeline(v);fetchBuilds(v);}}>
+                <option value="">All Pipelines</option>
+                {pipelines.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+              <button className="btn btn-sm" onClick={()=>fetchBuilds(selectedPipeline)}>Refresh</button>
+            </div>
+          </div>
+          {builds.length === 0 ? (
+            <div className="card" style={{textAlign:'center',padding:30,color:'#9ca3af'}}>
+              <p>No builds yet. Trigger a pipeline or wait for webhook callbacks.</p>
+            </div>
+          ) : (
+            <table className="table">
+              <thead><tr><th>#</th><th>Pipeline</th><th>Status</th><th>Trigger</th><th>Duration</th><th>Started</th><th>Actions</th></tr></thead>
+              <tbody>
+                {builds.map(b => (
+                  <tr key={b.id}>
+                    <td><strong>#{b.build_number}</strong></td>
+                    <td>{b.pipeline_name}</td>
+                    <td>{statusBadge(b.status)}</td>
+                    <td><span className="badge badge-secondary" style={{fontSize:10}}>{b.trigger_type}</span></td>
+                    <td>{b.duration_seconds ? `${b.duration_seconds}s` : '—'}</td>
+                    <td style={{fontSize:12}}>{b.started_at ? new Date(b.started_at).toLocaleString() : '—'}</td>
+                    <td style={{display:'flex',gap:4}}>
+                      {b.external_url && <a href={b.external_url} target="_blank" rel="noopener noreferrer" className="btn btn-sm btn-info">Open ↗</a>}
+                      {b.output && <button className="btn btn-sm btn-secondary" title={b.output} onClick={()=>alert(b.output)}>📄 Log</button>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+
+      {/* ── Repositories Tab ── */}
+      {tab === 'repositories' && (
+        <div>
+          {!selectedRepo ? (
+            <div>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16}}>
+                <h3>📦 Git Repositories</h3>
+                <button className="btn btn-primary" onClick={()=>setShowRepoForm(!showRepoForm)}>{showRepoForm ? '✕ Cancel' : '+ Connect Repository'}</button>
+              </div>
+
+              {showRepoForm && (
+                <div className="card" style={{marginBottom:20,padding:20}}>
+                  <h4 style={{marginBottom:12}}>Connect New Repository</h4>
+                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
+                    <div>
+                      <label>Name</label>
+                      <input className="form-control" value={repoForm.name} onChange={e=>setRepoForm({...repoForm, name:e.target.value})} placeholder="My Project" />
+                    </div>
+                    <div>
+                      <label>Provider</label>
+                      <select className="form-control" value={repoForm.provider} onChange={e=>setRepoForm({...repoForm, provider:e.target.value})}>
+                        <option value="github">GitHub</option>
+                        <option value="gitlab">GitLab</option>
+                        <option value="bitbucket">Bitbucket</option>
+                        <option value="gitbucket">GitBucket (Self-hosted)</option>
+                      </select>
+                    </div>
+                    {(repoForm.provider === 'gitlab' || repoForm.provider === 'gitbucket') && (
+                      <div style={{gridColumn:'1/3'}}>
+                        <label>Server URL</label>
+                        <input className="form-control" value={repoForm.server_url} onChange={e=>setRepoForm({...repoForm, server_url:e.target.value})} placeholder={repoForm.provider === 'gitbucket' ? 'http://your-server:8080' : 'https://gitlab.example.com'} />
+                      </div>
+                    )}
+                    <div>
+                      <label>Repository Full Name</label>
+                      <input className="form-control" value={repoForm.repo_full_name} onChange={e=>setRepoForm({...repoForm, repo_full_name:e.target.value})} placeholder="owner/repo-name" />
+                    </div>
+                    <div>
+                      <label>Default Branch</label>
+                      <input className="form-control" value={repoForm.default_branch} onChange={e=>setRepoForm({...repoForm, default_branch:e.target.value})} placeholder="main" />
+                    </div>
+                    <div style={{gridColumn:'1/3'}}>
+                      <label>Access Token</label>
+                      <input className="form-control" type="password" value={repoForm.auth_token} onChange={e=>setRepoForm({...repoForm, auth_token:e.target.value})} placeholder="Personal access token / App password" />
+                    </div>
+                  </div>
+                  <div style={{marginTop:12,display:'flex',gap:8}}>
+                    <button className="btn btn-primary" onClick={saveRepo}>💾 Save & Connect</button>
+                    {repoForm.auth_token && <button className="btn btn-info" onClick={discoverRepos} disabled={discoverLoading}>{discoverLoading ? '⏳ Discovering...' : '🔍 Discover Repos'}</button>}
+                  </div>
+
+                  {discoverResults && (
+                    <div style={{marginTop:16}}>
+                      <h5>Discovered Repositories ({discoverResults.length})</h5>
+                      <div style={{maxHeight:250,overflowY:'auto',border:'1px solid #374151',borderRadius:8,padding:8}}>
+                        {discoverResults.map((dr,i) => (
+                          <div key={i} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'6px 8px',borderBottom:'1px solid #1f2937'}}>
+                            <div>
+                              <strong>{dr.full_name}</strong>
+                              <span style={{marginLeft:8,fontSize:12,color:'#9ca3af'}}>{dr.description ? dr.description.substring(0,60) : ''}</span>
+                              {dr.private && <span style={{marginLeft:6,background:'#f59e0b',color:'#000',padding:'1px 6px',borderRadius:10,fontSize:11}}>Private</span>}
+                            </div>
+                            <button className="btn btn-sm btn-success" onClick={()=>{setRepoForm({...repoForm, name:dr.full_name.split('/')[1]||dr.full_name, repo_full_name:dr.full_name, default_branch:dr.default_branch||'main'})}}>Quick Fill</button>
+                          </div>
+                        ))}
+                        {discoverResults.length === 0 && <p style={{color:'#9ca3af',textAlign:'center',padding:16}}>No repositories found. Check your token permissions.</p>}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {gitLoading ? <p>Loading repositories...</p> : gitRepos.length === 0 ? (
+                <div className="card" style={{textAlign:'center',padding:40}}>
+                  <p style={{fontSize:48,marginBottom:8}}>📦</p>
+                  <p style={{color:'#9ca3af'}}>No repositories connected yet. Click "Connect Repository" to get started.</p>
+                </div>
+              ) : (
+                <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(340px,1fr))',gap:16}}>
+                  {gitRepos.map(repo => (
+                    <div key={repo.id} className="card" style={{padding:16,cursor:'pointer',border:repo.is_active ? '1px solid #10b981' : '1px solid #374151'}} onClick={()=>openRepoDetail(repo)}>
+                      <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
+                        <div>
+                          <span style={{fontSize:20,marginRight:6}}>
+                            {repo.provider === 'github' ? '🐙' : repo.provider === 'gitlab' ? '🦊' : repo.provider === 'bitbucket' ? '🪣' : '🗄️'}
+                          </span>
+                          <strong>{repo.name}</strong>
+                          <span style={{marginLeft:8,background:'#374151',padding:'2px 8px',borderRadius:10,fontSize:11,textTransform:'uppercase'}}>{repo.provider}</span>
+                        </div>
+                        <span style={{width:10,height:10,borderRadius:'50%',background:repo.is_active ? '#10b981' : '#ef4444',display:'inline-block',marginTop:6}}></span>
+                      </div>
+                      <p style={{color:'#9ca3af',fontSize:13,margin:'8px 0 4px'}}>{repo.repo_full_name}</p>
+                      <div style={{display:'flex',gap:8,fontSize:12,color:'#6b7280'}}>
+                        <span>🌿 {repo.default_branch}</span>
+                        {repo.webhook_id && <span>🔗 Webhook active</span>}
+                        {repo.last_synced && <span>🔄 {new Date(repo.last_synced).toLocaleDateString()}</span>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : (
+            /* ── Repo Detail View ── */
+            <div>
+              <button className="btn btn-secondary" onClick={()=>setSelectedRepo(null)} style={{marginBottom:12}}>← Back to Repositories</button>
+              <div className="card" style={{padding:20,marginBottom:16}}>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                  <div>
+                    <span style={{fontSize:24,marginRight:8}}>
+                      {selectedRepo.provider === 'github' ? '🐙' : selectedRepo.provider === 'gitlab' ? '🦊' : selectedRepo.provider === 'bitbucket' ? '🪣' : '🗄️'}
+                    </span>
+                    <h3 style={{display:'inline'}}>{selectedRepo.name}</h3>
+                    <span style={{marginLeft:12,background:'#374151',padding:'2px 10px',borderRadius:10,fontSize:12,textTransform:'uppercase'}}>{selectedRepo.provider}</span>
+                    <span style={{marginLeft:8,background:selectedRepo.is_active ? '#065f46' : '#7f1d1d',padding:'2px 10px',borderRadius:10,fontSize:12}}>{selectedRepo.is_active ? 'Active' : 'Inactive'}</span>
+                  </div>
+                  <div style={{display:'flex',gap:6}}>
+                    <button className="btn btn-sm btn-info" onClick={()=>testRepoConn(selectedRepo.id)}>🔌 Test</button>
+                    <button className="btn btn-sm btn-primary" onClick={()=>syncRepo(selectedRepo.id)}>🔄 Sync</button>
+                    {!selectedRepo.webhook_id ? <button className="btn btn-sm btn-success" onClick={()=>registerWebhook(selectedRepo.id)}>🔗 Add Webhook</button>
+                      : <button className="btn btn-sm btn-warning" onClick={()=>removeWebhook(selectedRepo.id)}>🔗 Remove Webhook</button>}
+                    <button className="btn btn-sm btn-danger" onClick={()=>deleteRepo(selectedRepo.id)}>🗑️ Delete</button>
+                  </div>
+                </div>
+                <p style={{color:'#9ca3af',marginTop:8}}>{selectedRepo.repo_full_name} • Branch: {selectedRepo.default_branch} {selectedRepo.last_synced && ` • Last synced: ${new Date(selectedRepo.last_synced).toLocaleString()}`}</p>
+              </div>
+
+              {/* Sub-tabs */}
+              <div style={{display:'flex',gap:4,marginBottom:16,flexWrap:'wrap'}}>
+                {[{k:'info',l:'ℹ️ Info'},{k:'branches',l:'🌿 Branches'},{k:'commits',l:'📝 Commits'},{k:'pulls',l:'🔀 Pull Requests'},{k:'tags',l:'🏷️ Tags'},{k:'files',l:'📁 Files'}].map(t => (
+                  <button key={t.k} className={`btn btn-sm ${repoSubTab===t.k ? 'btn-primary' : 'btn-secondary'}`}
+                    onClick={()=>{
+                      setRepoSubTab(t.k);
+                      if (t.k==='branches') loadRepoBranches(selectedRepo.id);
+                      if (t.k==='commits') loadRepoCommits(selectedRepo.id);
+                      if (t.k==='pulls') loadRepoPulls(selectedRepo.id);
+                      if (t.k==='tags') loadRepoTags(selectedRepo.id);
+                      if (t.k==='files') { setTreePath(''); setRepoFile(null); loadRepoTree(selectedRepo.id,''); }
+                    }}>{t.l}</button>
+                ))}
+              </div>
+
+              {/* Info Sub-tab */}
+              {repoSubTab === 'info' && (
+                <div className="card" style={{padding:20}}>
+                  <h4>Repository Information</h4>
+                  <table style={{width:'100%',marginTop:12}}>
+                    <tbody>
+                      {[['Name', selectedRepo.name],['Provider', selectedRepo.provider],['Full Name', selectedRepo.repo_full_name],['Default Branch', selectedRepo.default_branch],['Server URL', selectedRepo.server_url || 'Default (cloud)'],['Webhook ID', selectedRepo.webhook_id || 'None'],['Created', new Date(selectedRepo.created_at).toLocaleString()],['Last Synced', selectedRepo.last_synced ? new Date(selectedRepo.last_synced).toLocaleString() : 'Never']].map(([k,v]) => (
+                        <tr key={k}><td style={{padding:'6px 12px',color:'#9ca3af',width:160}}>{k}</td><td style={{padding:'6px 12px'}}>{v}</td></tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {selectedRepo.repo_meta && (
+                    <div style={{marginTop:16}}>
+                      <h5>Metadata</h5>
+                      <div style={{display:'flex',gap:16,flexWrap:'wrap',marginTop:8}}>
+                        {selectedRepo.repo_meta.stars != null && <span>⭐ {selectedRepo.repo_meta.stars} stars</span>}
+                        {selectedRepo.repo_meta.forks != null && <span>🍴 {selectedRepo.repo_meta.forks} forks</span>}
+                        {selectedRepo.repo_meta.open_issues != null && <span>🐛 {selectedRepo.repo_meta.open_issues} issues</span>}
+                        {selectedRepo.repo_meta.language && <span>💻 {selectedRepo.repo_meta.language}</span>}
+                        {selectedRepo.repo_meta.description && <p style={{width:'100%',color:'#9ca3af',marginTop:8}}>{selectedRepo.repo_meta.description}</p>}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Branches Sub-tab */}
+              {repoSubTab === 'branches' && (
+                <div className="card" style={{padding:20}}>
+                  <h4>🌿 Branches ({repoBranches.length})</h4>
+                  {repoBranches.length === 0 ? <p style={{color:'#9ca3af'}}>Loading branches...</p> : (
+                    <table style={{width:'100%',marginTop:12}}>
+                      <thead><tr><th style={{textAlign:'left',padding:6}}>Branch</th><th style={{textAlign:'left',padding:6}}>Latest Commit</th></tr></thead>
+                      <tbody>{repoBranches.map((b,i) => (
+                        <tr key={i}><td style={{padding:6}}>
+                          {b.name}{b.name === selectedRepo.default_branch && <span style={{marginLeft:6,background:'#065f46',padding:'1px 6px',borderRadius:10,fontSize:11}}>default</span>}
+                        </td><td style={{padding:6,color:'#9ca3af',fontSize:13}}>{b.sha ? b.sha.substring(0,8) : '—'}</td></tr>
+                      ))}</tbody>
+                    </table>
+                  )}
+                </div>
+              )}
+
+              {/* Commits Sub-tab */}
+              {repoSubTab === 'commits' && (
+                <div className="card" style={{padding:20}}>
+                  <h4>📝 Recent Commits</h4>
+                  {repoCommits.length === 0 ? <p style={{color:'#9ca3af'}}>Loading commits...</p> : (
+                    <div style={{marginTop:12}}>
+                      {repoCommits.map((c,i) => (
+                        <div key={i} style={{borderBottom:'1px solid #1f2937',padding:'10px 0'}}>
+                          <div style={{display:'flex',justifyContent:'space-between'}}>
+                            <strong style={{fontSize:14}}>{c.message ? c.message.split('\n')[0] : '—'}</strong>
+                            <code style={{color:'#60a5fa',fontSize:12}}>{c.sha ? c.sha.substring(0,8) : ''}</code>
+                          </div>
+                          <div style={{fontSize:12,color:'#6b7280',marginTop:4}}>
+                            {c.author || 'Unknown'} • {c.date ? new Date(c.date).toLocaleString() : ''}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Pull Requests Sub-tab */}
+              {repoSubTab === 'pulls' && (
+                <div className="card" style={{padding:20}}>
+                  <h4>🔀 Pull Requests / Merge Requests</h4>
+                  {repoPulls.length === 0 ? <p style={{color:'#9ca3af'}}>No open pull requests.</p> : (
+                    <div style={{marginTop:12}}>
+                      {repoPulls.map((pr,i) => (
+                        <div key={i} style={{borderBottom:'1px solid #1f2937',padding:'10px 0',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                          <div>
+                            <span style={{color:'#10b981',marginRight:6}}>#{pr.number}</span>
+                            <strong>{pr.title}</strong>
+                            <div style={{fontSize:12,color:'#6b7280',marginTop:4}}>by {pr.author || 'Unknown'} • {pr.created ? new Date(pr.created).toLocaleDateString() : ''}</div>
+                          </div>
+                          <span style={{background: pr.state === 'open' ? '#065f46' : pr.state === 'merged' ? '#581c87' : '#7f1d1d', padding:'2px 10px',borderRadius:10,fontSize:12}}>{pr.state || 'open'}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Tags Sub-tab */}
+              {repoSubTab === 'tags' && (
+                <div className="card" style={{padding:20}}>
+                  <h4>🏷️ Tags</h4>
+                  <button className="btn btn-sm btn-secondary" onClick={()=>loadRepoTags(selectedRepo.id)} style={{marginBottom:12}}>🔄 Refresh</button>
+                  {repoTags.length === 0 ? <p style={{color:'#9ca3af'}}>No tags found.</p> : (
+                    <table style={{width:'100%'}}>
+                      <thead><tr><th style={{textAlign:'left',padding:6}}>Tag</th><th style={{textAlign:'left',padding:6}}>SHA</th></tr></thead>
+                      <tbody>{repoTags.map((t,i) => (
+                        <tr key={i}><td style={{padding:6}}>🏷️ {t.name}</td><td style={{padding:6,color:'#9ca3af',fontSize:13}}>{t.sha ? t.sha.substring(0,8) : '—'}</td></tr>
+                      ))}</tbody>
+                    </table>
+                  )}
+                </div>
+              )}
+
+              {/* Files Sub-tab */}
+              {repoSubTab === 'files' && (
+                <div className="card" style={{padding:20}}>
+                  <h4>📁 File Browser</h4>
+                  <div style={{marginBottom:12,display:'flex',gap:8,alignItems:'center'}}>
+                    <span style={{color:'#9ca3af',fontSize:13}}>Path:</span>
+                    <span style={{color:'#60a5fa',fontSize:13,cursor:'pointer'}} onClick={()=>{setTreePath('');setRepoFile(null);loadRepoTree(selectedRepo.id,'');}}>root</span>
+                    {treePath && treePath.split('/').map((seg,i,arr)=>{
+                      const p = arr.slice(0,i+1).join('/');
+                      return <span key={i}><span style={{color:'#6b7280'}}> / </span><span style={{color:'#60a5fa',fontSize:13,cursor:'pointer'}} onClick={()=>{setTreePath(p);setRepoFile(null);loadRepoTree(selectedRepo.id,p);}}>{seg}</span></span>;
+                    })}
+                  </div>
+
+                  {repoFile ? (
+                    <div>
+                      <button className="btn btn-sm btn-secondary" onClick={()=>setRepoFile(null)} style={{marginBottom:8}}>← Back to tree</button>
+                      <div style={{background:'#0d1117',padding:16,borderRadius:8,overflowX:'auto'}}>
+                        <div style={{display:'flex',justifyContent:'space-between',marginBottom:8}}>
+                          <strong>{repoFile.name}</strong>
+                          <span style={{color:'#6b7280',fontSize:12}}>{repoFile.size ? `${(repoFile.size/1024).toFixed(1)} KB` : ''} • {repoFile.encoding || ''}</span>
+                        </div>
+                        <pre style={{margin:0,fontSize:13,lineHeight:1.5,color:'#e6edf3',whiteSpace:'pre-wrap',wordBreak:'break-all'}}>{repoFile.content || '(binary or empty)'}</pre>
+                      </div>
+                    </div>
+                  ) : (
+                    <div>
+                      {repoTree.length === 0 ? <p style={{color:'#9ca3af'}}>Loading file tree...</p> : (
+                        <table style={{width:'100%'}}>
+                          <tbody>{repoTree.map((item,i) => (
+                            <tr key={i} style={{cursor:'pointer',borderBottom:'1px solid #1f2937'}} onClick={()=>{
+                              if (item.type === 'dir' || item.type === 'tree') {
+                                const np = treePath ? `${treePath}/${item.name}` : item.name;
+                                setTreePath(np); setRepoFile(null); loadRepoTree(selectedRepo.id, np);
+                              } else {
+                                const fp = treePath ? `${treePath}/${item.name}` : item.name;
+                                loadRepoFile(selectedRepo.id, fp);
+                              }
+                            }}>
+                              <td style={{padding:'6px 8px',width:30}}>{item.type === 'dir' || item.type === 'tree' ? '📁' : '📄'}</td>
+                              <td style={{padding:'6px 8px',color: item.type === 'dir' || item.type === 'tree' ? '#60a5fa' : '#e5e7eb'}}>{item.name}</td>
+                              <td style={{padding:'6px 8px',color:'#6b7280',fontSize:12,textAlign:'right'}}>{item.size ? `${(item.size/1024).toFixed(1)} KB` : ''}</td>
+                            </tr>
+                          ))}</tbody>
+                        </table>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Script Templates Tab ── */}
+      {tab === 'scripts' && (
+        <div>
+          <h3>📜 Pipeline Script Templates</h3>
+          <p style={{color:'#9ca3af',marginBottom:16}}>Ready-to-use pipeline scripts for Jenkins (Groovy), GitLab CI / GitHub Actions (YAML), and Shell. Copy and customize for your environment.</p>
+          {Object.entries(templates).map(([key, tpl]) => (
+            <div key={key} className="card" style={{marginBottom:16}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                <h4 style={{margin:0}}>{key==='groovy'?'🔧':key==='yaml'?'📝':'💻'} {tpl.label}</h4>
+                <button className="btn btn-sm btn-primary" onClick={()=>{navigator.clipboard.writeText(tpl.content);setMsg(`${key} template copied to clipboard!`);}}>📋 Copy</button>
+              </div>
+              <pre className="code-block" style={{marginTop:10,maxHeight:350,overflow:'auto',fontSize:11}}>{tpl.content}</pre>
+            </div>
+          ))}
+
+          {/* Webhook setup guide */}
+          <div className="card">
+            <h4>🔗 Webhook Setup Guide</h4>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(300px,1fr))',gap:16}}>
+              <div>
+                <h5>Jenkins</h5>
+                <ol style={{fontSize:13,paddingLeft:20}}>
+                  <li>Install "Generic Webhook Trigger" plugin</li>
+                  <li>In job config → Build Triggers → Generic Webhook Trigger</li>
+                  <li>Set Token to your pipeline's webhook secret</li>
+                  <li>For notifications back: Install "Notification" plugin, add webhook URL</li>
+                  <li>Jenkinsfile supports Groovy declarative & scripted pipelines</li>
+                </ol>
+              </div>
+              <div>
+                <h5>GitLab CI</h5>
+                <ol style={{fontSize:13,paddingLeft:20}}>
+                  <li>Go to Settings → Webhooks</li>
+                  <li>Enter the PatchMaster webhook URL</li>
+                  <li>Set Secret Token to your pipeline's webhook secret</li>
+                  <li>Select "Pipeline events" trigger</li>
+                  <li>Use <code>.gitlab-ci.yml</code> with YAML template</li>
+                </ol>
+              </div>
+              <div>
+                <h5>GitHub Actions</h5>
+                <ol style={{fontSize:13,paddingLeft:20}}>
+                  <li>Go to Settings → Webhooks → Add webhook</li>
+                  <li>Enter the PatchMaster webhook URL</li>
+                  <li>Set Secret to your pipeline's webhook secret</li>
+                  <li>Select "Workflow runs" events</li>
+                  <li>Use <code>.github/workflows/*.yml</code> with YAML template</li>
+                </ol>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ─── Monitoring Tools ─── */
 function MonitoringToolsPage() {
   const [status, setStatus] = useState(null);
@@ -1266,7 +2022,12 @@ function LicensePage({ licenseInfo, onRefresh }) {
   const [key, setKey] = useState('');
   const [msg, setMsg] = useState('');
   const [loading, setLoading] = useState(false);
+  const [tierData, setTierData] = useState(null);
   const li = licenseInfo || {};
+
+  useEffect(() => {
+    fetch(`${API}/api/license/tiers`).then(r=>r.json()).then(setTierData).catch(()=>{});
+  }, []);
 
   const activate = async () => {
     if (!key.trim()) { setMsg('Please enter a license key'); return; }
@@ -1291,6 +2052,9 @@ function LicensePage({ licenseInfo, onRefresh }) {
 
   const statusColor = !li.activated ? '#6c757d' : li.expired ? '#dc3545' : li.days_remaining <= 30 ? '#ffc107' : '#28a745';
   const statusLabel = !li.activated ? 'Not Activated' : li.expired ? 'Expired' : 'Active';
+  const tierColors = { basic:'#3b82f6', standard:'#10b981', devops:'#f59e0b', enterprise:'#8b5cf6' };
+  const tierIcons = { basic:'📦', standard:'⭐', devops:'🚀', enterprise:'👑' };
+  const allFeats = tierData ? tierData.all_features : [];
 
   return (
     <div>
@@ -1300,19 +2064,53 @@ function LicensePage({ licenseInfo, onRefresh }) {
         <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:16}}>
           <span style={{display:'inline-block',width:14,height:14,borderRadius:'50%',background:statusColor}}></span>
           <span style={{fontSize:18,fontWeight:700}}>{statusLabel}</span>
+          {li.tier && (
+            <span style={{background:tierColors[li.tier]||'#6c757d',color:'#fff',padding:'3px 12px',borderRadius:12,fontSize:13,fontWeight:600}}>
+              {tierIcons[li.tier]||'🔑'} {li.tier_label || li.tier}
+            </span>
+          )}
         </div>
         {li.activated && li.valid ? (
-          <table className="table"><tbody>
-            <tr><td><strong>Plan</strong></td><td>{li.plan_label}</td></tr>
-            <tr><td><strong>Customer</strong></td><td>{li.customer}</td></tr>
-            <tr><td><strong>Issued</strong></td><td>{li.issued_at}</td></tr>
-            <tr><td><strong>Expires</strong></td><td>
-              <span style={{color: li.expired ? '#dc3545' : li.days_remaining<=30 ? '#e67e00' : '#28a745', fontWeight:600}}>
-                {li.expires_at} {li.expired ? '(EXPIRED)' : `(${li.days_remaining} days remaining)`}
-              </span>
-            </td></tr>
-            <tr><td><strong>Max Hosts</strong></td><td>{li.max_hosts === 0 ? 'Unlimited' : li.max_hosts}</td></tr>
-          </tbody></table>
+          <div>
+            <table className="table"><tbody>
+              <tr><td><strong>License ID</strong></td><td><code>{li.license_id || 'legacy'}</code></td></tr>
+              <tr><td><strong>Plan</strong></td><td>{li.plan_label}</td></tr>
+              <tr><td><strong>Tier</strong></td><td>
+                <span style={{background:tierColors[li.tier]||'#374151',color:'#fff',padding:'2px 10px',borderRadius:10,fontSize:12}}>{li.tier_label || li.tier || 'Enterprise'}</span>
+              </td></tr>
+              <tr><td><strong>Customer</strong></td><td>{li.customer}</td></tr>
+              <tr><td><strong>Issued</strong></td><td>{li.issued_at}</td></tr>
+              <tr><td><strong>Expires</strong></td><td>
+                <span style={{color: li.expired ? '#dc3545' : li.days_remaining<=30 ? '#e67e00' : '#28a745', fontWeight:600}}>
+                  {li.expires_at} {li.expired ? '(EXPIRED)' : `(${li.days_remaining} days remaining)`}
+                </span>
+              </td></tr>
+              <tr><td><strong>Max Hosts</strong></td><td>{li.max_hosts === 0 ? 'Unlimited' : li.max_hosts}</td></tr>
+              <tr><td><strong>Version Compat</strong></td><td>{li.version_compat || '2.x'} (tool: {li.tool_version || '2.0'})</td></tr>
+            </tbody></table>
+
+            {/* Licensed Features */}
+            {li.features && li.features.length > 0 && (
+              <div style={{marginTop:16}}>
+                <h4>Licensed Features ({li.features.length}/{allFeats.length || 19})</h4>
+                <div style={{display:'flex',flexWrap:'wrap',gap:6,marginTop:8}}>
+                  {(allFeats.length ? allFeats : li.features).map(f => {
+                    const enabled = li.features.includes(f);
+                    return (
+                      <span key={f} style={{
+                        padding:'4px 10px',borderRadius:10,fontSize:12,fontWeight:500,
+                        background: enabled ? '#065f46' : '#1f2937',
+                        color: enabled ? '#6ee7b7' : '#6b7280',
+                        border: enabled ? '1px solid #10b981' : '1px solid #374151',
+                      }}>
+                        {enabled ? '✓' : '✗'} {f}
+                      </span>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
         ) : li.activated && !li.valid ? (
           <p style={{color:'#dc3545',fontWeight:500}}>License key is invalid: {li.error}</p>
         ) : (
@@ -1334,19 +2132,81 @@ function LicensePage({ licenseInfo, onRefresh }) {
         {msg && <p style={{marginTop:8,fontWeight:500,color:msg.includes('successfully')?'#28a745':'#dc3545'}}>{msg}</p>}
       </div>
 
-      {/* Plan Reference */}
+      {/* Tier Comparison Matrix */}
       <div className="card">
-        <h3>📋 Available Plans</h3>
+        <h3>📊 License Tier Comparison</h3>
+        <p style={{color:'#9ca3af',marginBottom:16}}>Choose the right tier for your needs. All tiers are available with 1-year, 2-year, or 5-year plans.</p>
+        {tierData && tierData.tiers ? (
+          <div>
+            {/* Tier Cards */}
+            <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))',gap:16,marginBottom:24}}>
+              {tierData.tiers.map(t => {
+                const isCurrent = li.tier === t.tier;
+                return (
+                  <div key={t.tier} style={{
+                    border: isCurrent ? `2px solid ${tierColors[t.tier]}` : '1px solid #374151',
+                    borderRadius:12, padding:20, background: isCurrent ? '#1a1a2e' : '#111827',
+                    position:'relative',
+                  }}>
+                    {isCurrent && <span style={{position:'absolute',top:-10,right:12,background:tierColors[t.tier],color:'#fff',padding:'2px 10px',borderRadius:10,fontSize:11,fontWeight:600}}>CURRENT</span>}
+                    <div style={{fontSize:28,marginBottom:8}}>{tierIcons[t.tier]}</div>
+                    <h4 style={{color:tierColors[t.tier],marginBottom:4}}>{t.label}</h4>
+                    <p style={{color:'#9ca3af',fontSize:13,marginBottom:12}}>{t.feature_count} features</p>
+                    <div style={{fontSize:12}}>
+                      {t.features.map(f => (
+                        <div key={f} style={{color:'#d1d5db',padding:'2px 0'}}>✓ {f}</div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Feature Matrix Table */}
+            <h4 style={{marginBottom:12}}>Feature Matrix</h4>
+            <div style={{overflowX:'auto'}}>
+              <table className="table" style={{fontSize:13}}>
+                <thead>
+                  <tr>
+                    <th style={{textAlign:'left'}}>Feature</th>
+                    {tierData.tiers.map(t => (
+                      <th key={t.tier} style={{textAlign:'center',color:tierColors[t.tier]}}>{tierIcons[t.tier]} {t.label}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {tierData.all_features.map(f => (
+                    <tr key={f}>
+                      <td>{f}</td>
+                      {tierData.tiers.map(t => (
+                        <td key={t.tier} style={{textAlign:'center'}}>
+                          {t.features.includes(f)
+                            ? <span style={{color:'#10b981',fontSize:16}}>✓</span>
+                            : <span style={{color:'#4b5563'}}>—</span>}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ) : <p style={{color:'#6b7280'}}>Loading tier data...</p>}
+      </div>
+
+      {/* Plan Duration Reference */}
+      <div className="card">
+        <h3>📋 Plan Durations</h3>
         <table className="table">
           <thead><tr><th>Plan</th><th>Duration</th><th>Description</th></tr></thead>
           <tbody>
-            <tr><td><span className="badge badge-info">Testing</span></td><td>1 Month</td><td>Evaluation / testing environment</td></tr>
-            <tr><td><span className="badge badge-success">Standard</span></td><td>1 Year</td><td>Production use — annual license</td></tr>
-            <tr><td><span className="badge badge-warning">Professional</span></td><td>2 Years</td><td>Extended production license</td></tr>
-            <tr><td><span className="badge" style={{background:'#6f42c1',color:'#fff'}}>Enterprise</span></td><td>5 Years</td><td>Long-term enterprise deployment</td></tr>
+            <tr><td><span className="badge" style={{background:'#6b7280',color:'#fff'}}>Testing</span></td><td>1 Month</td><td>Full features enabled for evaluation (Enterprise tier)</td></tr>
+            <tr><td><span className="badge" style={{background:'#3b82f6',color:'#fff'}}>1-Year</span></td><td>365 days</td><td>Annual license — any tier</td></tr>
+            <tr><td><span className="badge" style={{background:'#f59e0b',color:'#fff'}}>2-Year</span></td><td>730 days</td><td>Extended license — any tier</td></tr>
+            <tr><td><span className="badge" style={{background:'#8b5cf6',color:'#fff'}}>5-Year</span></td><td>1825 days</td><td>Long-term deployment — any tier</td></tr>
           </tbody>
         </table>
-        <p style={{color:'#888',fontSize:12,marginTop:8}}>Contact your PatchMaster vendor to obtain a license key.</p>
+        <p style={{color:'#888',fontSize:12,marginTop:8}}>Contact your PatchMaster vendor to obtain a license key. Testing licenses unlock all features for evaluation.</p>
       </div>
     </div>
   );

@@ -10,17 +10,18 @@ from typing import List, Optional, Dict
 from database import get_db
 from auth import hash_password, verify_password, create_access_token, get_current_user, require_role
 from models.db_models import User, UserRole
+from license import get_licensed_features
 
 # ── Feature list & role defaults ──
 ALL_FEATURES = [
     'dashboard', 'compliance', 'hosts', 'groups', 'patches', 'snapshots',
     'compare', 'offline', 'schedules', 'cve', 'jobs', 'audit',
-    'notifications', 'users', 'license', 'onboarding', 'settings',
+    'notifications', 'users', 'license', 'cicd', 'git', 'onboarding', 'settings',
 ]
 
 ROLE_DEFAULTS = {
     'admin':    {f: True for f in ALL_FEATURES},
-    'operator': {f: True for f in ALL_FEATURES if f not in ('audit', 'users', 'license')},
+    'operator': {f: True for f in ALL_FEATURES if f not in ('audit', 'users', 'license', 'cicd', 'git')},
     'viewer':   {f: True for f in ['dashboard','compliance','hosts','groups','compare','cve','jobs','onboarding','settings']},
     'auditor':  {f: True for f in ['dashboard','compliance','hosts','groups','compare','cve','jobs','audit','onboarding','settings']},
 }
@@ -31,12 +32,17 @@ for role_perms in ROLE_DEFAULTS.values():
 
 
 def get_effective_permissions(role: str, custom: dict = None) -> dict:
-    """Merge role defaults with per-user custom overrides."""
+    """Merge role defaults with per-user custom overrides, then intersect with license tier."""
     base = dict(ROLE_DEFAULTS.get(role, ROLE_DEFAULTS['viewer']))
     if custom:
         for k, v in custom.items():
             if k in base:
                 base[k] = bool(v)
+    # Intersect with license-allowed features (license tier enforcement)
+    licensed = get_licensed_features()
+    for f in base:
+        if f not in licensed:
+            base[f] = False
     return base
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
