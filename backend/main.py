@@ -18,6 +18,8 @@ from api.cve import router as cve_router
 from api.notifications import router as notifications_router
 from api.metrics import router as metrics_router, MetricsMiddleware
 from api.zabbix import router as zabbix_router
+from api.license_router import router as license_router
+from license import get_license_info
 
 
 @asynccontextmanager
@@ -27,6 +29,54 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="PatchMaster", version="2.0.0", lifespan=lifespan)
+
+# ── License enforcement middleware ──
+# Blocks all API requests (except license & health endpoints) when license is
+# missing or expired.
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse
+
+
+class LicenseMiddleware(BaseHTTPMiddleware):
+    # Paths that work without a valid license
+    EXEMPT_PATHS = (
+        "/api/health",
+        "/api/license/",
+        "/api/auth/login",
+        "/api/auth/register",
+        "/docs",
+        "/openapi.json",
+        "/static/",
+        "/metrics",
+    )
+
+    async def dispatch(self, request, call_next):
+        path = request.url.path
+        # Allow exempt paths
+        if any(path.startswith(p) for p in self.EXEMPT_PATHS):
+            return await call_next(request)
+        # Check license
+        info = get_license_info()
+        if not info.get("activated", False):
+            return JSONResponse(
+                status_code=403,
+                content={
+                    "detail": "No license activated. Please activate a license to use PatchMaster.",
+                    "license_status": "not_activated",
+                },
+            )
+        if info.get("expired", True):
+            return JSONResponse(
+                status_code=403,
+                content={
+                    "detail": f"License expired on {info.get('expires_at', 'unknown')}. Please renew.",
+                    "license_status": "expired",
+                },
+            )
+        return await call_next(request)
+
+
+app.add_middleware(LicenseMiddleware)
 
 # Prometheus request metrics middleware
 app.add_middleware(MetricsMiddleware)
@@ -78,3 +128,5 @@ app.include_router(notifications_router)
 app.include_router(metrics_router)
 # Zabbix integration
 app.include_router(zabbix_router)
+# License management
+app.include_router(license_router)

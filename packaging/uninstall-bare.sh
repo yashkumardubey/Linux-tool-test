@@ -25,7 +25,7 @@ while [[ $# -gt 0 ]]; do
             echo "Usage: sudo $0 [OPTIONS]"
             echo ""
             echo "Options:"
-            echo "  --purge             Remove ALL data (database, user, Prometheus data, Grafana data)"
+            echo "  --purge             Remove ALL data (database, user, monitoring if installed)"
             echo "  --install-dir DIR   Installation directory (default: /opt/patchmaster)"
             echo "  -h, --help          Show this help"
             exit 0
@@ -95,7 +95,7 @@ nginx -t &>/dev/null && systemctl reload nginx 2>/dev/null || true
 log "  Nginx config removed"
 
 ###############################################################################
-# Step 4: Purge database and monitoring (only with --purge)
+# Step 4: Purge database, monitoring, and user data (only with --purge)
 ###############################################################################
 if [[ "$PURGE" == "true" ]]; then
     # Drop PostgreSQL database and user
@@ -104,27 +104,29 @@ if [[ "$PURGE" == "true" ]]; then
     su - postgres -c "psql -c 'DROP USER IF EXISTS patchmaster;'" 2>/dev/null || true
     log "  Database dropped"
 
-    # Remove Prometheus data
-    log "Removing Prometheus data..."
+    # Remove Prometheus (only if installed by PatchMaster)
     if [[ -f /etc/systemd/system/prometheus.service ]]; then
+        log "Removing Prometheus..."
         systemctl stop prometheus 2>/dev/null || true
         systemctl disable prometheus 2>/dev/null || true
         rm -f /etc/systemd/system/prometheus.service
+        rm -rf /var/lib/prometheus
+        rm -rf /etc/prometheus
+        rm -f /usr/local/bin/prometheus /usr/local/bin/promtool
+        if id prometheus &>/dev/null; then
+            userdel prometheus 2>/dev/null || true
+        fi
+        log "  Prometheus removed"
     fi
-    rm -rf /var/lib/prometheus
-    rm -rf /etc/prometheus
-    rm -f /usr/local/bin/prometheus /usr/local/bin/promtool
-    if id prometheus &>/dev/null; then
-        userdel prometheus 2>/dev/null || true
-    fi
-    log "  Prometheus removed"
 
-    # Remove Grafana provisioning
-    log "Removing Grafana PatchMaster config..."
-    rm -f /etc/grafana/provisioning/datasources/patchmaster.yml
-    rm -f /etc/grafana/provisioning/dashboards/patchmaster.yml
-    rm -f /var/lib/grafana/dashboards/patchmaster-overview.json
-    log "  Grafana config removed (Grafana itself preserved)"
+    # Remove Grafana PatchMaster config (only if provisioning files exist)
+    if [[ -f /etc/grafana/provisioning/datasources/patchmaster.yml ]]; then
+        log "Removing Grafana PatchMaster config..."
+        rm -f /etc/grafana/provisioning/datasources/patchmaster.yml
+        rm -f /etc/grafana/provisioning/dashboards/patchmaster.yml
+        rm -f /var/lib/grafana/dashboards/patchmaster-overview.json
+        log "  Grafana config removed (Grafana itself preserved)"
+    fi
 
     # Remove service user
     if id "$SVC_USER" &>/dev/null; then

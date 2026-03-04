@@ -70,10 +70,14 @@ rsync -a --quiet \
     --exclude='.gitignore' \
     "$PROJECT_ROOT/" "$STAGE/"
 
-# Ensure docs/ folder has the SOP PDFs
+# Ensure docs/ folder has the SOP PDFs and integration guides
 mkdir -p "$STAGE/docs"
 for pdf in "$PROJECT_ROOT"/SOP_PatchMaster_*.pdf; do
     [[ -f "$pdf" ]] && cp "$pdf" "$STAGE/docs/"
+done
+# Copy markdown guides
+for md in "$PROJECT_ROOT"/docs/*.md; do
+    [[ -f "$md" ]] && cp "$md" "$STAGE/docs/"
 done
 # Move PDFs out of root into docs/
 rm -f "$STAGE"/SOP_PatchMaster_*.pdf
@@ -81,7 +85,7 @@ rm -f "$STAGE"/SOP_PatchMaster_*.pdf
 # Ensure certs dir exists
 mkdir -p "$STAGE/certs"
 
-log "  Copied: backend/ agent/ frontend/ monitoring/ packaging/ docs/"
+log "  Copied: backend/ agent/ frontend/ monitoring/ packaging/ tools/ docs/"
 
 ###############################################################################
 # Step 4: Copy env.example to root for easy access
@@ -215,6 +219,17 @@ curl -sS http://YOUR-SERVER:3000/download/install.sh | sudo bash -s -- YOUR-SERV
 
 ## Documentation
 See `docs/` for complete SOPs: User Guide, Developer Guide, Prerequisites.
+
+## Monitoring Integration
+PatchMaster exposes endpoints for Prometheus, Grafana, and Zabbix.
+
+**Already have monitoring tools?** See `docs/MONITORING-INTEGRATION.md` for
+step-by-step instructions to connect your existing Prometheus, Grafana, or Zabbix.
+
+**Want PatchMaster to install them for you?** Use `--with-monitoring`:
+```bash
+sudo ./packaging/install-bare.sh --with-monitoring
+```
 GUIDE
 
 ###############################################################################

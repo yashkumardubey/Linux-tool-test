@@ -73,6 +73,7 @@ class User(Base):
     full_name = Column(String(200), default="")
     role = Column(Enum(UserRole), default=UserRole.viewer, nullable=False)
     is_active = Column(Boolean, default=True)
+    custom_permissions = Column(JSON, nullable=True)  # per-user feature overrides
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

@@ -23,6 +23,7 @@ async function apiFetch(url, opts = {}) {
 }
 
 function hasRole(...roles) { const u = getUser(); return u && roles.includes(u.role); }
+function hasPerm(feature) { const u = getUser(); if(!u) return false; if(u.role==='admin') return true; return u.permissions ? !!u.permissions[feature] : hasRole('admin'); }
 
 /* ─── Main App ─── */
 function App() {
@@ -32,6 +33,7 @@ function App() {
   const [health, setHealth] = useState(null);
   const [hosts, setHosts] = useState([]);
   const [jobs, setJobs] = useState([]);
+  const [licenseInfo, setLicenseInfo] = useState(null);
 
   const handleLogin = (t, u) => { setToken(t); setUser(u); setTokenState(t); setUserState(u); };
   const handleLogout = () => { clearToken(); setTokenState(null); setUserState(null); };
@@ -39,6 +41,7 @@ function App() {
   const fetchAll = useCallback(() => {
     if (!getToken()) return;
     fetch(`${API}/api/health`).then(r => r.json()).then(setHealth).catch(() => setHealth(null));
+    fetch(`${API}/api/license/status`).then(r => r.json()).then(setLicenseInfo).catch(() => {});
     apiFetch(`${API}/api/hosts/`).then(r => r.json()).then(setHosts).catch(() => {});
     apiFetch(`${API}/api/jobs/`).then(r => r.json()).then(setJobs).catch(() => {});
   }, []);
@@ -49,19 +52,21 @@ function App() {
 
   const navItems = [
     { key: 'dashboard', label: 'Dashboard', icon: '📊' },
-    { key: 'compliance', label: 'Compliance', icon: '🛡️' },
-    { key: 'hosts', label: 'Hosts', icon: '🖥️' },
-    { key: 'groups', label: 'Groups & Tags', icon: '📁' },
-    { key: 'patches', label: 'Patch Manager', icon: '🔄' },
-    { key: 'snapshots', label: 'Snapshots', icon: '📸' },
-    { key: 'compare', label: 'Compare Packages', icon: '🔍' },
-    { key: 'offline', label: 'Offline Patching', icon: '📦' },
-    { key: 'schedules', label: 'Schedules', icon: '📅' },
-    { key: 'cve', label: 'CVE Tracker', icon: '🔒' },
-    { key: 'jobs', label: 'Job History', icon: '⚙️' },
-    { key: 'audit', label: 'Audit Trail', icon: '📋' },
-    { key: 'notifications', label: 'Notifications', icon: '🔔' },
-    ...(hasRole('admin') ? [{ key: 'users', label: 'User Management', icon: '👤' }] : []),
+    ...(hasPerm('compliance') ? [{ key: 'compliance', label: 'Compliance', icon: '🛡️' }] : []),
+    ...(hasPerm('hosts') ? [{ key: 'hosts', label: 'Hosts', icon: '🖥️' }] : []),
+    ...(hasPerm('groups') ? [{ key: 'groups', label: 'Groups & Tags', icon: '📁' }] : []),
+    ...(hasPerm('patches') ? [{ key: 'patches', label: 'Patch Manager', icon: '🔄' }] : []),
+    ...(hasPerm('snapshots') ? [{ key: 'snapshots', label: 'Snapshots', icon: '📸' }] : []),
+    ...(hasPerm('compare') ? [{ key: 'compare', label: 'Compare Packages', icon: '🔍' }] : []),
+    ...(hasPerm('offline') ? [{ key: 'offline', label: 'Offline Patching', icon: '📦' }] : []),
+    ...(hasPerm('schedules') ? [{ key: 'schedules', label: 'Schedules', icon: '📅' }] : []),
+    ...(hasPerm('cve') ? [{ key: 'cve', label: 'CVE Tracker', icon: '🔒' }] : []),
+    ...(hasPerm('jobs') ? [{ key: 'jobs', label: 'Job History', icon: '⚙️' }] : []),
+    ...(hasPerm('audit') ? [{ key: 'audit', label: 'Audit Trail', icon: '📋' }] : []),
+    ...(hasPerm('notifications') ? [{ key: 'notifications', label: 'Notifications', icon: '🔔' }] : []),
+    ...(hasPerm('users') ? [{ key: 'users', label: 'User Management', icon: '👤' }] : []),
+    ...(hasPerm('license') ? [{ key: 'license', label: 'License', icon: '🔑' }] : []),
+    { key: 'monitoring', label: 'Monitoring Tools', icon: '📈' },
     { key: 'onboarding', label: 'Onboarding', icon: '🚀' },
     { key: 'settings', label: 'Settings', icon: '🔧' },
   ];
@@ -89,6 +94,22 @@ function App() {
         </div>
       </aside>
       <main className="main-content">
+        {/* License warning banners */}
+        {licenseInfo && !licenseInfo.activated && (
+          <div style={{background:'#dc3545',color:'#fff',padding:'10px 20px',textAlign:'center',fontWeight:600,cursor:'pointer'}} onClick={()=>setPage('license')}>
+            ⚠️ No license activated. PatchMaster features are disabled. Click here to activate.
+          </div>
+        )}
+        {licenseInfo && licenseInfo.activated && licenseInfo.expired && (
+          <div style={{background:'#dc3545',color:'#fff',padding:'10px 20px',textAlign:'center',fontWeight:600,cursor:'pointer'}} onClick={()=>setPage('license')}>
+            ⚠️ License expired on {licenseInfo.expires_at}. PatchMaster features are disabled. Click here to renew.
+          </div>
+        )}
+        {licenseInfo && licenseInfo.valid && !licenseInfo.expired && licenseInfo.days_remaining <= 30 && (
+          <div style={{background:'#ffc107',color:'#000',padding:'8px 20px',textAlign:'center',fontWeight:600,cursor:'pointer'}} onClick={()=>setPage('license')}>
+            ⚠️ License expires in {licenseInfo.days_remaining} day{licenseInfo.days_remaining!==1?'s':''} ({licenseInfo.expires_at}). Click here to manage.
+          </div>
+        )}
         <header className="top-bar">
           <h1 className="page-title">{navItems.find(n => n.key === page)?.label || 'Dashboard'}</h1>
           <div className="top-bar-actions">
@@ -109,7 +130,9 @@ function App() {
           {page === 'jobs' && <JobsPage jobs={jobs} setJobs={setJobs} />}
           {page === 'audit' && <AuditPage />}
           {page === 'notifications' && <NotificationsPage />}
-          {page === 'users' && hasRole('admin') && <UsersPage />}
+          {page === 'users' && hasPerm('users') && <UsersPage />}
+          {page === 'license' && hasPerm('license') && <LicensePage licenseInfo={licenseInfo} onRefresh={fetchAll} />}
+          {page === 'monitoring' && <MonitoringToolsPage />}
           {page === 'onboarding' && <OnboardingPage />}
           {page === 'settings' && <SettingsPage health={health} hosts={hosts} jobs={jobs} />}
         </div>
@@ -819,22 +842,394 @@ function NotificationsPage() {
 /* ─── User Management (admin) ─── */
 function UsersPage() {
   const [users, setUsers] = useState([]);
+  const [showCreate, setShowCreate] = useState(false);
+  const [newUser, setNewUser] = useState({username:'',email:'',password:'',full_name:'',role:'viewer'});
+  const [createMsg, setCreateMsg] = useState('');
+  const [resetPw, setResetPw] = useState({userId:null,password:''});
+  const [resetMsg, setResetMsg] = useState('');
+  const [editPermsUser, setEditPermsUser] = useState(null);
+  const [editPerms, setEditPerms] = useState({});
+  const [permsMsg, setPermsMsg] = useState('');
+  const [roleDefaults, setRoleDefaults] = useState(null);
+  const [allFeatures, setAllFeatures] = useState([]);
+  const [viewTab, setViewTab] = useState('users');
+
   const refresh = () => { apiFetch(`${API}/api/auth/users`).then(r=>r.json()).then(setUsers).catch(()=>{}); };
-  useEffect(refresh, []);
+  useEffect(() => {
+    refresh();
+    apiFetch(`${API}/api/auth/role-defaults`).then(r=>r.json()).then(d => {
+      setRoleDefaults(d.role_defaults);
+      setAllFeatures(d.features);
+    }).catch(()=>{});
+  }, []);
 
   const changeRole = async (id, role) => {
     await apiFetch(`${API}/api/auth/users/${id}`, { method:'PUT', body:JSON.stringify({role}) });
     refresh();
   };
-  const del = id => { if(!window.confirm('Delete user?'))return; apiFetch(`${API}/api/auth/users/${id}`,{method:'DELETE'}).then(refresh); };
+  const toggleActive = async (id, is_active) => {
+    await apiFetch(`${API}/api/auth/users/${id}`, { method:'PUT', body:JSON.stringify({is_active: !is_active}) });
+    refresh();
+  };
+  const del = id => { if(!window.confirm('Delete this user? This cannot be undone.'))return; apiFetch(`${API}/api/auth/users/${id}`,{method:'DELETE'}).then(refresh); };
+
+  const createUser = async () => {
+    setCreateMsg('');
+    if(!newUser.username||!newUser.email||!newUser.password) { setCreateMsg('All fields are required'); return; }
+    try {
+      const r = await apiFetch(`${API}/api/auth/users`, { method:'POST', body:JSON.stringify(newUser) });
+      const d = await r.json();
+      if(r.ok) { setCreateMsg('User created successfully!'); setNewUser({username:'',email:'',password:'',full_name:'',role:'viewer'}); setShowCreate(false); refresh(); }
+      else { setCreateMsg(d.detail||'Failed to create user'); }
+    } catch(e) { setCreateMsg('Error: '+e.message); }
+  };
+
+  const adminResetPassword = async () => {
+    setResetMsg('');
+    if(!resetPw.password) { setResetMsg('Enter a new password'); return; }
+    try {
+      const r = await apiFetch(`${API}/api/auth/users/${resetPw.userId}/reset-password`, { method:'POST', body:JSON.stringify({new_password:resetPw.password}) });
+      const d = await r.json();
+      if(r.ok) { setResetMsg('Password reset!'); setResetPw({userId:null,password:''}); }
+      else { setResetMsg(d.detail||'Failed'); }
+    } catch(e) { setResetMsg('Error: '+e.message); }
+  };
+
+  const openPermsEditor = (u) => {
+    setEditPermsUser(u);
+    setEditPerms(u.effective_permissions || {});
+    setPermsMsg('');
+  };
+  const togglePerm = (feat) => {
+    setEditPerms(p => ({...p, [feat]: !p[feat]}));
+  };
+  const savePerms = async () => {
+    setPermsMsg('');
+    if(!editPermsUser) return;
+    // Only save overrides that differ from role defaults
+    const roleDef = roleDefaults ? roleDefaults[editPermsUser.role] : {};
+    const overrides = {};
+    for(const f of allFeatures) {
+      if(editPerms[f] !== roleDef[f]) overrides[f] = editPerms[f];
+    }
+    try {
+      const r = await apiFetch(`${API}/api/auth/users/${editPermsUser.id}/permissions`, { method:'PUT', body:JSON.stringify({permissions: Object.keys(overrides).length ? overrides : null}) });
+      if(r.ok) { setPermsMsg('Permissions saved!'); refresh(); }
+      else { const d = await r.json(); setPermsMsg(d.detail||'Failed'); }
+    } catch(e) { setPermsMsg('Error: '+e.message); }
+  };
+  const resetPermsToRole = () => {
+    if(editPermsUser && roleDefaults) {
+      setEditPerms({...roleDefaults[editPermsUser.role]});
+    }
+  };
+
+  const featureLabels = {
+    dashboard:'Dashboard', compliance:'Compliance', hosts:'Hosts', groups:'Groups & Tags',
+    patches:'Patch Manager', snapshots:'Snapshots', compare:'Compare Packages', offline:'Offline Patching',
+    schedules:'Schedules', cve:'CVE Tracker', jobs:'Job History', audit:'Audit Trail',
+    notifications:'Notifications', users:'User Management', license:'License', onboarding:'Onboarding', settings:'Settings'
+  };
 
   return (
     <div>
-      <div className="card"><h3>Users ({users.length})</h3>
-        <table className="table"><thead><tr><th>Username</th><th>Email</th><th>Role</th><th>Active</th><th>Created</th><th>Actions</th></tr></thead>
-        <tbody>{users.map(u=><tr key={u.id}><td><strong>{u.username}</strong></td><td>{u.email||'—'}</td><td>
-          <select className="input input-sm" value={u.role} onChange={e=>changeRole(u.id,e.target.value)}><option value="admin">Admin</option><option value="operator">Operator</option><option value="viewer">Viewer</option><option value="auditor">Auditor</option></select>
-        </td><td>{u.is_active?<span className="badge badge-success">Yes</span>:<span className="badge badge-danger">No</span>}</td><td>{u.created_at?new Date(u.created_at).toLocaleDateString():'—'}</td><td><button className="btn btn-sm btn-danger" onClick={()=>del(u.id)}>Del</button></td></tr>)}</tbody></table>
+      {/* Tab navigation */}
+      <div style={{display:'flex',gap:4,marginBottom:16}}>
+        {[{k:'users',l:'👤 Users'},{k:'permissions',l:'🛡️ RBAC Matrix'},{k:'peruser',l:'⚙️ Per-User Permissions'}].map(t=>(
+          <button key={t.k} className={`btn ${viewTab===t.k?'btn-primary':''}`} onClick={()=>setViewTab(t.k)}>{t.l}</button>
+        ))}
+      </div>
+
+      {/* ── TAB 1: Users List ── */}
+      {viewTab === 'users' && (<>
+        {/* Create User */}
+        <div className="card">
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+            <h3>👤 Users ({users.length})</h3>
+            <button className="btn btn-primary" onClick={()=>setShowCreate(!showCreate)}>{showCreate?'Cancel':'+ New User'}</button>
+          </div>
+          {showCreate && (
+            <div style={{marginTop:16,padding:16,background:'rgba(255,255,255,0.05)',borderRadius:8}}>
+              <h4 style={{marginBottom:12}}>Create New User</h4>
+              <div className="form-row" style={{flexWrap:'wrap',gap:8}}>
+                <input className="input" placeholder="Username *" value={newUser.username} onChange={e=>setNewUser(f=>({...f,username:e.target.value}))} style={{minWidth:150}} />
+                <input className="input" type="email" placeholder="Email *" value={newUser.email} onChange={e=>setNewUser(f=>({...f,email:e.target.value}))} style={{minWidth:200}} />
+                <input className="input" type="password" placeholder="Password * (min 8 chars)" value={newUser.password} onChange={e=>setNewUser(f=>({...f,password:e.target.value}))} style={{minWidth:180}} />
+                <input className="input" placeholder="Full Name" value={newUser.full_name} onChange={e=>setNewUser(f=>({...f,full_name:e.target.value}))} style={{minWidth:150}} />
+                <select className="input" value={newUser.role} onChange={e=>setNewUser(f=>({...f,role:e.target.value}))}>
+                  <option value="admin">Admin</option><option value="operator">Operator</option><option value="viewer">Viewer</option><option value="auditor">Auditor</option>
+                </select>
+                <button className="btn btn-primary" onClick={createUser}>Create User</button>
+              </div>
+              {createMsg && <p style={{marginTop:8,fontWeight:500,color:createMsg.includes('success')?'#28a745':'#dc3545'}}>{createMsg}</p>}
+            </div>
+          )}
+        </div>
+
+        {/* Users Table */}
+        <div className="card">
+          <table className="table">
+            <thead><tr><th>Username</th><th>Email</th><th>Full Name</th><th>Role</th><th>Active</th><th>Created</th><th>Actions</th></tr></thead>
+            <tbody>{users.map(u=><tr key={u.id}>
+              <td><strong>{u.username}</strong></td>
+              <td>{u.email||'—'}</td>
+              <td>{u.full_name||'—'}</td>
+              <td>
+                <select className="input input-sm" value={u.role} onChange={e=>changeRole(u.id,e.target.value)} style={{minWidth:100}}>
+                  <option value="admin">Admin</option><option value="operator">Operator</option><option value="viewer">Viewer</option><option value="auditor">Auditor</option>
+                </select>
+              </td>
+              <td>
+                <button className={`btn btn-sm ${u.is_active?'btn-success':'btn-danger'}`} onClick={()=>toggleActive(u.id,u.is_active)} style={{minWidth:70}}>
+                  {u.is_active?'Active':'Disabled'}
+                </button>
+              </td>
+              <td>{u.created_at?new Date(u.created_at).toLocaleDateString():'—'}</td>
+              <td style={{display:'flex',gap:4,flexWrap:'wrap'}}>
+                <button className="btn btn-sm btn-info" onClick={()=>{openPermsEditor(u);setViewTab('peruser');}}>Perms</button>
+                <button className="btn btn-sm btn-warning" onClick={()=>{setResetPw({userId:u.id,password:''});setResetMsg('');}}>Reset PW</button>
+                <button className="btn btn-sm btn-danger" onClick={()=>del(u.id)}>Delete</button>
+              </td>
+            </tr>)}</tbody>
+          </table>
+        </div>
+
+        {/* Reset Password Panel */}
+        {resetPw.userId && (
+          <div className="card" style={{border:'2px solid #ffc107'}}>
+            <h3>🔑 Reset Password for: {users.find(u=>u.id===resetPw.userId)?.username}</h3>
+            <div className="form-row">
+              <input className="input" type="password" placeholder="New password (min 8 chars)" value={resetPw.password} onChange={e=>setResetPw(f=>({...f,password:e.target.value}))} />
+              <button className="btn btn-warning" onClick={adminResetPassword}>Reset Password</button>
+              <button className="btn" onClick={()=>setResetPw({userId:null,password:''})}>Cancel</button>
+            </div>
+            {resetMsg && <p style={{marginTop:8,fontWeight:500,color:resetMsg.includes('reset')?'#28a745':'#dc3545'}}>{resetMsg}</p>}
+          </div>
+        )}
+      </>)}
+
+      {/* ── TAB 2: RBAC Permissions Matrix ── */}
+      {viewTab === 'permissions' && (
+        <div className="card">
+          <h3>🛡️ Role-Based Access Control (RBAC) Matrix</h3>
+          <p style={{color:'#9ca3af',marginBottom:12}}>Shows default permissions for each role. Admin can override per user in the "Per-User Permissions" tab.</p>
+          {roleDefaults ? (
+            <div style={{overflowX:'auto'}}>
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th style={{minWidth:180}}>Feature</th>
+                    <th style={{textAlign:'center'}}>Admin</th>
+                    <th style={{textAlign:'center'}}>Operator</th>
+                    <th style={{textAlign:'center'}}>Viewer</th>
+                    <th style={{textAlign:'center'}}>Auditor</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {allFeatures.map(f => (
+                    <tr key={f}>
+                      <td><strong>{featureLabels[f]||f}</strong></td>
+                      {['admin','operator','viewer','auditor'].map(role => (
+                        <td key={role} style={{textAlign:'center'}}>
+                          {roleDefaults[role]?.[f] ? <span style={{color:'#28a745',fontSize:18}}>✅</span> : <span style={{color:'#6c757d',fontSize:14}}>—</span>}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : <p>Loading...</p>}
+
+          {/* Per-user effective permissions */}
+          <h3 style={{marginTop:24}}>👥 All Users — Effective Permissions</h3>
+          <p style={{color:'#9ca3af',marginBottom:12}}>Shows actual permissions per user (role defaults + custom overrides). Custom overrides shown in <span style={{color:'#f39c12',fontWeight:600}}>orange</span>.</p>
+          {users.length > 0 && allFeatures.length > 0 && (
+            <div style={{overflowX:'auto'}}>
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th style={{minWidth:120}}>Feature</th>
+                    {users.map(u => <th key={u.id} style={{textAlign:'center',minWidth:80}}><div>{u.username}</div><div style={{fontSize:10,color:'#9ca3af'}}>({u.role})</div></th>)}
+                  </tr>
+                </thead>
+                <tbody>
+                  {allFeatures.map(f => (
+                    <tr key={f}>
+                      <td><strong>{featureLabels[f]||f}</strong></td>
+                      {users.map(u => {
+                        const ep = u.effective_permissions || {};
+                        const hasCustom = u.custom_permissions && u.custom_permissions[f] !== undefined;
+                        return (
+                          <td key={u.id} style={{textAlign:'center', background: hasCustom ? 'rgba(243,156,18,0.1)' : 'transparent'}}>
+                            {ep[f] ? <span style={{color: hasCustom ? '#f39c12' : '#28a745',fontSize:16}}>✅</span> : <span style={{color:'#6c757d',fontSize:14}}>—</span>}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── TAB 3: Per-User Permissions Editor ── */}
+      {viewTab === 'peruser' && (
+        <div>
+          {!editPermsUser ? (
+            <div className="card">
+              <h3>⚙️ Per-User Permissions</h3>
+              <p style={{color:'#9ca3af'}}>Select a user to customize their feature access beyond their role defaults.</p>
+              <div style={{display:'flex',flexWrap:'wrap',gap:8,marginTop:12}}>
+                {users.map(u => (
+                  <button key={u.id} className="btn" onClick={()=>openPermsEditor(u)} style={{minWidth:120}}>
+                    <strong>{u.username}</strong><br/><span style={{fontSize:11,color:'#9ca3af'}}>{u.role}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="card" style={{border:'2px solid #3b82f6'}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:8}}>
+                <h3>⚙️ Permissions for: {editPermsUser.username} <span className="badge badge-info">{editPermsUser.role}</span></h3>
+                <div style={{display:'flex',gap:8}}>
+                  <button className="btn" onClick={resetPermsToRole}>Reset to Role Defaults</button>
+                  <button className="btn btn-primary" onClick={savePerms}>Save Permissions</button>
+                  <button className="btn" onClick={()=>{setEditPermsUser(null);setPermsMsg('');}}>Close</button>
+                </div>
+              </div>
+              {permsMsg && <p style={{marginTop:8,fontWeight:500,color:permsMsg.includes('saved')?'#28a745':'#dc3545'}}>{permsMsg}</p>}
+              <p style={{color:'#9ca3af',margin:'8px 0'}}>Toggle features ON/OFF for this user. Changes override their role defaults.</p>
+              <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(200px,1fr))',gap:8,marginTop:12}}>
+                {allFeatures.map(f => {
+                  const isOn = !!editPerms[f];
+                  const roleDef = roleDefaults ? !!roleDefaults[editPermsUser.role]?.[f] : false;
+                  const isOverride = isOn !== roleDef;
+                  return (
+                    <div key={f} onClick={()=>togglePerm(f)} style={{
+                      padding:'10px 14px', borderRadius:8, cursor:'pointer', display:'flex', alignItems:'center', gap:10,
+                      background: isOn ? 'rgba(40,167,69,0.15)' : 'rgba(108,117,125,0.1)',
+                      border: isOverride ? '2px solid #f39c12' : '2px solid transparent',
+                    }}>
+                      <span style={{fontSize:20}}>{isOn ? '✅' : '❌'}</span>
+                      <div>
+                        <div style={{fontWeight:600}}>{featureLabels[f]||f}</div>
+                        {isOverride && <div style={{fontSize:10,color:'#f39c12'}}>Custom override</div>}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ─── Monitoring Tools ─── */
+function MonitoringToolsPage() {
+  const [status, setStatus] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const masterIp = window.location.hostname;
+
+  useEffect(() => {
+    setLoading(true);
+    apiFetch(`${API}/api/auth/monitoring-status`).then(r=>r.json()).then(d=>{setStatus(d);setLoading(false);}).catch(()=>setLoading(false));
+  }, []);
+
+  const toolInfo = {
+    prometheus: { icon: '🔥', desc: 'Metrics collection & alerting', docs: 'https://prometheus.io/docs/' },
+    grafana:    { icon: '📊', desc: 'Dashboards & visualization', docs: 'https://grafana.com/docs/' },
+    zabbix:     { icon: '🦊', desc: 'Infrastructure monitoring', docs: 'https://www.zabbix.com/documentation' },
+  };
+
+  return (
+    <div>
+      <div className="card">
+        <h3>📈 Monitoring Tools</h3>
+        <p style={{color:'#9ca3af',marginBottom:16}}>Quick-launch monitoring tools if installed on this infrastructure. PatchMaster exposes <code>/metrics</code> endpoint (Prometheus format) for integration.</p>
+        {loading ? <p>Checking services...</p> : !status ? <p className="text-danger">Could not check monitoring status</p> : (
+          <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))',gap:16}}>
+            {Object.entries(status).map(([key, s]) => {
+              const info = toolInfo[key] || {};
+              return (
+                <div key={key} style={{
+                  padding:20, borderRadius:12,
+                  background: s.reachable ? 'rgba(40,167,69,0.1)' : 'rgba(108,117,125,0.08)',
+                  border: s.reachable ? '2px solid #28a745' : '2px solid #6c757d',
+                }}>
+                  <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:12}}>
+                    <span style={{fontSize:28}}>{info.icon||'🔧'}</span>
+                    <div>
+                      <h4 style={{margin:0}}>{s.name}</h4>
+                      <span style={{fontSize:12,color:'#9ca3af'}}>{info.desc}</span>
+                    </div>
+                  </div>
+                  <div style={{marginBottom:12}}>
+                    <span style={{fontSize:13}}>Port: <strong>{s.port}</strong></span>
+                    <span style={{marginLeft:12}}>
+                      Status: {s.reachable
+                        ? <span className="badge badge-success">Running</span>
+                        : <span className="badge badge-danger">Not Detected</span>}
+                    </span>
+                  </div>
+                  {s.reachable && s.url ? (
+                    <a href={s.url.replace('localhost', masterIp).replace('127.0.0.1', masterIp)} target="_blank" rel="noopener noreferrer" className="btn btn-primary" style={{width:'100%',textAlign:'center'}}>
+                      Open {s.name} ↗
+                    </a>
+                  ) : (
+                    <div style={{padding:12,borderRadius:8,background:'rgba(220,53,69,0.1)',border:'1px solid rgba(220,53,69,0.3)'}}>
+                      <p style={{margin:0,fontSize:13,color:'#dc3545',fontWeight:600}}>⚠️ {s.name} is not installed or not running on port {s.port}.</p>
+                      <p style={{margin:'8px 0 0',fontSize:12,color:'#9ca3af'}}>
+                        To install, run PatchMaster installer with <code>--with-monitoring</code> flag, or set up {s.name} manually and ensure it's listening on port {s.port}.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Integration info */}
+      <div className="card">
+        <h3>🔗 PatchMaster Metrics Endpoint</h3>
+        <p>PatchMaster exposes metrics at <code>/metrics</code> in Prometheus format, ready to scrape.</p>
+        <pre className="code-block">{`# Prometheus scrape config
+- job_name: 'patchmaster'
+  metrics_path: '/metrics'
+  static_configs:
+    - targets: ['${masterIp}:8000']`}</pre>
+      </div>
+
+      <div className="card">
+        <h3>📋 Setup Commands</h3>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))',gap:16}}>
+          <div>
+            <h4>🔥 Prometheus</h4>
+            <pre className="code-block" style={{fontSize:11}}>{`sudo apt install prometheus
+sudo systemctl enable --now prometheus
+# Default: http://localhost:9090`}</pre>
+          </div>
+          <div>
+            <h4>📊 Grafana</h4>
+            <pre className="code-block" style={{fontSize:11}}>{`sudo apt install grafana
+sudo systemctl enable --now grafana-server
+# Default: http://localhost:3001`}</pre>
+          </div>
+          <div>
+            <h4>🦊 Zabbix</h4>
+            <pre className="code-block" style={{fontSize:11}}>{`# Install from zabbix.com repository
+sudo apt install zabbix-server-pgsql zabbix-frontend-php
+sudo systemctl enable --now zabbix-server
+# Default: http://localhost:8080`}</pre>
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -866,16 +1261,109 @@ function OnboardingPage() {
 }
 
 /* ─── Settings ─── */
+/* ─── License Page ─── */
+function LicensePage({ licenseInfo, onRefresh }) {
+  const [key, setKey] = useState('');
+  const [msg, setMsg] = useState('');
+  const [loading, setLoading] = useState(false);
+  const li = licenseInfo || {};
+
+  const activate = async () => {
+    if (!key.trim()) { setMsg('Please enter a license key'); return; }
+    setLoading(true); setMsg('');
+    try {
+      const r = await apiFetch(`${API}/api/license/activate`, { method:'POST', body: JSON.stringify({ license_key: key.trim() }) });
+      const d = await r.json();
+      if (r.ok) { setMsg('License activated successfully!'); setKey(''); onRefresh(); }
+      else { setMsg(d.detail || 'Activation failed'); }
+    } catch(e) { setMsg('Error: ' + e.message); }
+    setLoading(false);
+  };
+
+  const deactivate = async () => {
+    if (!window.confirm('Deactivate the current license? PatchMaster will stop working.')) return;
+    try {
+      const r = await apiFetch(`${API}/api/license/deactivate`, { method:'DELETE' });
+      if (r.ok) { setMsg('License deactivated'); onRefresh(); }
+      else { const d = await r.json(); setMsg(d.detail || 'Failed'); }
+    } catch(e) { setMsg('Error: ' + e.message); }
+  };
+
+  const statusColor = !li.activated ? '#6c757d' : li.expired ? '#dc3545' : li.days_remaining <= 30 ? '#ffc107' : '#28a745';
+  const statusLabel = !li.activated ? 'Not Activated' : li.expired ? 'Expired' : 'Active';
+
+  return (
+    <div>
+      {/* Current License Status */}
+      <div className="card">
+        <h3>🔑 License Status</h3>
+        <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:16}}>
+          <span style={{display:'inline-block',width:14,height:14,borderRadius:'50%',background:statusColor}}></span>
+          <span style={{fontSize:18,fontWeight:700}}>{statusLabel}</span>
+        </div>
+        {li.activated && li.valid ? (
+          <table className="table"><tbody>
+            <tr><td><strong>Plan</strong></td><td>{li.plan_label}</td></tr>
+            <tr><td><strong>Customer</strong></td><td>{li.customer}</td></tr>
+            <tr><td><strong>Issued</strong></td><td>{li.issued_at}</td></tr>
+            <tr><td><strong>Expires</strong></td><td>
+              <span style={{color: li.expired ? '#dc3545' : li.days_remaining<=30 ? '#e67e00' : '#28a745', fontWeight:600}}>
+                {li.expires_at} {li.expired ? '(EXPIRED)' : `(${li.days_remaining} days remaining)`}
+              </span>
+            </td></tr>
+            <tr><td><strong>Max Hosts</strong></td><td>{li.max_hosts === 0 ? 'Unlimited' : li.max_hosts}</td></tr>
+          </tbody></table>
+        ) : li.activated && !li.valid ? (
+          <p style={{color:'#dc3545',fontWeight:500}}>License key is invalid: {li.error}</p>
+        ) : (
+          <p style={{color:'#6c757d'}}>No license key found. Enter a license key below to activate PatchMaster.</p>
+        )}
+        {li.activated && li.valid && hasRole('admin') && (
+          <button className="btn btn-danger" onClick={deactivate} style={{marginTop:12}}>Deactivate License</button>
+        )}
+      </div>
+
+      {/* Activate / Renew */}
+      <div className="card">
+        <h3>{li.activated && li.valid && !li.expired ? '🔄 Renew / Change License' : '🔑 Activate License'}</h3>
+        <p style={{color:'#666',marginBottom:12}}>Paste the license key provided by your PatchMaster administrator.</p>
+        <div className="form-row">
+          <input className="input" style={{flex:1,fontFamily:'monospace',fontSize:12}} placeholder="PM1-xxxxxxxxx.xxxxxxxx" value={key} onChange={e => setKey(e.target.value)} />
+          <button className="btn btn-primary" onClick={activate} disabled={loading}>{loading ? 'Activating...' : 'Activate'}</button>
+        </div>
+        {msg && <p style={{marginTop:8,fontWeight:500,color:msg.includes('successfully')?'#28a745':'#dc3545'}}>{msg}</p>}
+      </div>
+
+      {/* Plan Reference */}
+      <div className="card">
+        <h3>📋 Available Plans</h3>
+        <table className="table">
+          <thead><tr><th>Plan</th><th>Duration</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><span className="badge badge-info">Testing</span></td><td>1 Month</td><td>Evaluation / testing environment</td></tr>
+            <tr><td><span className="badge badge-success">Standard</span></td><td>1 Year</td><td>Production use — annual license</td></tr>
+            <tr><td><span className="badge badge-warning">Professional</span></td><td>2 Years</td><td>Extended production license</td></tr>
+            <tr><td><span className="badge" style={{background:'#6f42c1',color:'#fff'}}>Enterprise</span></td><td>5 Years</td><td>Long-term enterprise deployment</td></tr>
+          </tbody>
+        </table>
+        <p style={{color:'#888',fontSize:12,marginTop:8}}>Contact your PatchMaster vendor to obtain a license key.</p>
+      </div>
+    </div>
+  );
+}
+
 function SettingsPage({ health, hosts, jobs }) {
-  const [changePw, setChangePw] = useState({current:'',new_password:''});
+  const [changePw, setChangePw] = useState({current:'',new_password:'',confirm_password:''});
   const [pwMsg, setPwMsg] = useState('');
   const masterIp = window.location.hostname;
   const frontendUrl = `http://${masterIp}:${window.location.port||'3000'}`;
 
   const changePassword = async () => {
+    if(changePw.new_password !== changePw.confirm_password) { setPwMsg('New passwords do not match'); return; }
+    if(changePw.new_password.length < 8) { setPwMsg('Password must be at least 8 characters'); return; }
     try {
-      const r = await apiFetch(`${API}/api/auth/change-password`, { method:'POST', body:JSON.stringify(changePw) });
-      if(r.ok) { setPwMsg('Password changed!'); setChangePw({current:'',new_password:''}); } else { const d=await r.json(); setPwMsg(d.detail||'Failed'); }
+      const r = await apiFetch(`${API}/api/auth/change-password`, { method:'POST', body:JSON.stringify({old_password:changePw.current,new_password:changePw.new_password}) });
+      if(r.ok) { setPwMsg('Password changed successfully!'); setChangePw({current:'',new_password:'',confirm_password:''}); } else { const d=await r.json(); setPwMsg(d.detail||'Failed'); }
     } catch(e) { setPwMsg('Error: '+e.message); }
   };
 
@@ -890,13 +1378,14 @@ function SettingsPage({ health, hosts, jobs }) {
           <tr><td><strong>Version</strong></td><td>2.0.0 Enterprise</td></tr>
         </tbody></table>
       </div>
-      <div className="card"><h3>🔑 Change Password</h3>
-        <div className="form-row">
+      <div className="card"><h3>🔑 Change My Password</h3>
+        <div className="form-row" style={{flexWrap:'wrap',gap:8}}>
           <input className="input" type="password" placeholder="Current password" value={changePw.current} onChange={e=>setChangePw(f=>({...f,current:e.target.value}))} />
-          <input className="input" type="password" placeholder="New password" value={changePw.new_password} onChange={e=>setChangePw(f=>({...f,new_password:e.target.value}))} />
-          <button className="btn btn-primary" onClick={changePassword}>Change</button>
+          <input className="input" type="password" placeholder="New password (min 8 chars)" value={changePw.new_password} onChange={e=>setChangePw(f=>({...f,new_password:e.target.value}))} />
+          <input className="input" type="password" placeholder="Confirm new password" value={changePw.confirm_password} onChange={e=>setChangePw(f=>({...f,confirm_password:e.target.value}))} />
+          <button className="btn btn-primary" onClick={changePassword}>Change Password</button>
         </div>
-        {pwMsg && <p style={{marginTop:8,fontWeight:500}}>{pwMsg}</p>}
+        {pwMsg && <p style={{marginTop:8,fontWeight:500,color:pwMsg.includes('success')?'#28a745':'#dc3545'}}>{pwMsg}</p>}
       </div>
       <div className="card"><h3>⚡ Quick Agent Install</h3><pre className="code-block">{`curl -sS ${frontendUrl}/download/install.sh | sudo bash -s -- ${masterIp}`}</pre></div>
       <div className="card"><h3>🐳 Docker Commands</h3><pre className="code-block">{`docker compose build --no-cache\ndocker compose up -d\ndocker compose logs -f backend\ndocker compose down`}</pre></div>
