@@ -64,6 +64,7 @@ rsync -a --quiet \
     --exclude='__pycache__' \
     --exclude='*.pyc' \
     --exclude='dist' \
+    --exclude='tools' \
     --exclude='generate_sops.py' \
     --exclude='generate_prerequisites.py' \
     --exclude='.gitattributes' \

@@ -17,6 +17,7 @@ ALL_FEATURES = [
     'dashboard', 'compliance', 'hosts', 'groups', 'patches', 'snapshots',
     'compare', 'offline', 'schedules', 'cve', 'jobs', 'audit',
     'notifications', 'users', 'license', 'cicd', 'git', 'onboarding', 'settings',
+    'monitoring',
 ]
 
 ROLE_DEFAULTS = {

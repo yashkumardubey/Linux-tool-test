@@ -34,7 +34,7 @@ ALL_FEATURES: List[str] = [
     "dashboard", "compliance", "hosts", "groups", "patches",
     "snapshots", "compare", "offline", "schedules", "cve",
     "jobs", "audit", "notifications", "users", "license",
-    "cicd", "git", "onboarding", "settings",
+    "cicd", "git", "onboarding", "settings", "monitoring",
 ]
 
 TIER_FEATURES: dict = {
@@ -48,13 +48,14 @@ TIER_FEATURES: dict = {
         "snapshots", "compare", "offline", "schedules",
         "jobs", "onboarding",
         "compliance", "cve", "audit", "notifications", "users",
+        "monitoring",
     ],
     "devops": [
         "dashboard", "hosts", "groups", "patches",
         "snapshots", "compare", "offline", "schedules",
         "jobs", "onboarding",
         "compliance", "cve", "audit", "notifications", "users",
-        "cicd", "git",
+        "cicd", "git", "monitoring",
     ],
     "enterprise": ALL_FEATURES[:],
 }

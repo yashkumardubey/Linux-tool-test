@@ -1,4 +1,4 @@
-"""License management API — view status, activate, deactivate, tier info."""
+"""License management API — view status, activate, deactivate."""
 import os
 from pathlib import Path
 from typing import List
@@ -14,10 +14,8 @@ from license import (
     invalidate_cache,
     LicenseError,
     LICENSE_FILE,
-    TIER_FEATURES,
-    TIER_LABELS,
-    ALL_FEATURES,
 )
+import monitoring_manager
 
 router = APIRouter(prefix="/api/license", tags=["License"])
 
@@ -93,6 +91,14 @@ async def activate_license(req: ActivateRequest, user=Depends(require_role(UserR
     invalidate_cache()
 
     info = get_license_info(force_refresh=True)
+
+    # Enforce monitoring services based on new license tier
+    try:
+        features = info.get("features", [])
+        monitoring_manager.enforce_license(features)
+    except Exception:
+        pass  # non-blocking — don't fail license activation
+
     return LicenseResponse(
         valid=info.get("valid", False),
         expired=info.get("expired", False),
@@ -123,17 +129,3 @@ async def deactivate_license(user=Depends(require_role(UserRole.admin))):
 
     invalidate_cache()
     return {"detail": "License deactivated"}
-
-
-@router.get("/tiers")
-async def list_tiers():
-    """Return all tier definitions and their features (public, no auth)."""
-    tiers = []
-    for key in ("basic", "standard", "devops", "enterprise"):
-        tiers.append({
-            "tier": key,
-            "label": TIER_LABELS.get(key, key.title()),
-            "features": TIER_FEATURES.get(key, []),
-            "feature_count": len(TIER_FEATURES.get(key, [])),
-        })
-    return {"tiers": tiers, "all_features": ALL_FEATURES}

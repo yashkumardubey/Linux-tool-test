@@ -34,6 +34,7 @@ function App() {
   const [hosts, setHosts] = useState([]);
   const [jobs, setJobs] = useState([]);
   const [licenseInfo, setLicenseInfo] = useState(null);
+  const [showLicensePopup, setShowLicensePopup] = useState(false);
 
   const handleLogin = (t, u) => { setToken(t); setUser(u); setTokenState(t); setUserState(u); };
   const handleLogout = () => { clearToken(); setTokenState(null); setUserState(null); };
@@ -47,6 +48,15 @@ function App() {
   }, []);
 
   useEffect(() => { if (token) { fetchAll(); const t = setInterval(fetchAll, 15000); return () => clearInterval(t); } }, [token, fetchAll]);
+
+  // Auto-show license popup when license is expired or not activated
+  useEffect(() => {
+    if (licenseInfo && (!licenseInfo.activated || licenseInfo.expired)) {
+      setShowLicensePopup(true);
+    } else {
+      setShowLicensePopup(false);
+    }
+  }, [licenseInfo]);
 
   if (!token) return <LoginPage onLogin={handleLogin} />;
 
@@ -65,7 +75,7 @@ function App() {
     ...(hasPerm('audit') ? [{ key: 'audit', label: 'Audit Trail', icon: '📋' }] : []),
     ...(hasPerm('notifications') ? [{ key: 'notifications', label: 'Notifications', icon: '🔔' }] : []),
     ...(hasPerm('users') ? [{ key: 'users', label: 'User Management', icon: '👤' }] : []),
-    ...(hasPerm('license') ? [{ key: 'license', label: 'License', icon: '🔑' }] : []),
+    { key: 'license', label: 'License', icon: '🔑' },
     ...(hasPerm('cicd') ? [{ key: 'cicd', label: 'CI/CD Pipelines', icon: '🚀' }] : []),
     { key: 'monitoring', label: 'Monitoring Tools', icon: '📈' },
     { key: 'onboarding', label: 'Onboarding', icon: '🚀' },
@@ -87,6 +97,24 @@ function App() {
           ))}
         </nav>
         <div className="sidebar-footer">
+          {/* License status indicator */}
+          {licenseInfo && (
+            <div style={{marginBottom:8,padding:'6px 10px',borderRadius:6,fontSize:11,cursor:'pointer',
+              background: !licenseInfo.activated ? '#374151' : licenseInfo.expired ? '#7f1d1d' : licenseInfo.days_remaining<=30 ? '#78350f' : '#064e3b',
+              color: !licenseInfo.activated ? '#9ca3af' : licenseInfo.expired ? '#fca5a5' : licenseInfo.days_remaining<=30 ? '#fcd34d' : '#6ee7b7',
+              border: `1px solid ${!licenseInfo.activated ? '#4b5563' : licenseInfo.expired ? '#dc2626' : licenseInfo.days_remaining<=30 ? '#f59e0b' : '#10b981'}`
+            }} onClick={()=>setPage('license')}>
+              <div style={{fontWeight:600}}>
+                {!licenseInfo.activated ? '⚠️ No License' : licenseInfo.expired ? '🔴 License Expired' : `🟢 ${licenseInfo.tier_label || 'Licensed'}`}
+              </div>
+              {licenseInfo.activated && !licenseInfo.expired && (
+                <div style={{marginTop:2,opacity:0.85}}>{licenseInfo.days_remaining} days remaining</div>
+              )}
+              {licenseInfo.activated && licenseInfo.expired && (
+                <div style={{marginTop:2,opacity:0.85}}>Expired — click to renew</div>
+              )}
+            </div>
+          )}
           <div style={{display:'flex',alignItems:'center',gap:8,width:'100%'}}>
             <span className={`status-dot ${health ? 'online' : 'offline'}`}></span>
             <span style={{flex:1}}>{user?.username} <span className="badge badge-info" style={{fontSize:9}}>{user?.role}</span></span>
@@ -95,17 +123,9 @@ function App() {
         </div>
       </aside>
       <main className="main-content">
-        {/* License warning banners */}
-        {licenseInfo && !licenseInfo.activated && (
-          <div style={{background:'#dc3545',color:'#fff',padding:'10px 20px',textAlign:'center',fontWeight:600,cursor:'pointer'}} onClick={()=>setPage('license')}>
-            ⚠️ No license activated. PatchMaster features are disabled. Click here to activate.
-          </div>
-        )}
-        {licenseInfo && licenseInfo.activated && licenseInfo.expired && (
-          <div style={{background:'#dc3545',color:'#fff',padding:'10px 20px',textAlign:'center',fontWeight:600,cursor:'pointer'}} onClick={()=>setPage('license')}>
-            ⚠️ License expired on {licenseInfo.expires_at}. PatchMaster features are disabled. Click here to renew.
-          </div>
-        )}
+        {/* License expired/not-activated popup modal */}
+        {showLicensePopup && <LicensePopup licenseInfo={licenseInfo} onSuccess={() => { setShowLicensePopup(false); fetchAll(); }} />}
+        {/* Expiring soon warning banner */}
         {licenseInfo && licenseInfo.valid && !licenseInfo.expired && licenseInfo.days_remaining <= 30 && (
           <div style={{background:'#ffc107',color:'#000',padding:'8px 20px',textAlign:'center',fontWeight:600,cursor:'pointer'}} onClick={()=>setPage('license')}>
             ⚠️ License expires in {licenseInfo.days_remaining} day{licenseInfo.days_remaining!==1?'s':''} ({licenseInfo.expires_at}). Click here to manage.
@@ -132,7 +152,7 @@ function App() {
           {page === 'audit' && <AuditPage />}
           {page === 'notifications' && <NotificationsPage />}
           {page === 'users' && hasPerm('users') && <UsersPage />}
-          {page === 'license' && hasPerm('license') && <LicensePage licenseInfo={licenseInfo} onRefresh={fetchAll} />}
+          {page === 'license' && <LicensePage licenseInfo={licenseInfo} onRefresh={fetchAll} />}
           {page === 'cicd' && hasPerm('cicd') && <CICDPage />}
           {page === 'monitoring' && <MonitoringToolsPage />}
           {page === 'onboarding' && <OnboardingPage />}
@@ -184,6 +204,82 @@ function LoginPage({ onLogin }) {
         <p style={{marginTop:16,fontSize:13,color:'#6b7280',cursor:'pointer'}} onClick={()=>{setIsRegister(!isRegister);setError('');}}>
           {isRegister ? 'Already have an account? Login' : 'First time? Register (first user = admin)'}
         </p>
+      </div>
+    </div>
+  );
+}
+
+/* ─── License Expired / Not Activated Popup ─── */
+function LicensePopup({ licenseInfo, onSuccess }) {
+  const [key, setKey] = useState('');
+  const [msg, setMsg] = useState('');
+  const [loading, setLoading] = useState(false);
+  const li = licenseInfo || {};
+  const isExpired = li.activated && li.expired;
+
+  const activate = async () => {
+    if (!key.trim()) { setMsg('Please enter a license key'); return; }
+    setLoading(true); setMsg('');
+    try {
+      const r = await apiFetch(`${API}/api/license/activate`, { method:'POST', body: JSON.stringify({ license_key: key.trim() }) });
+      const d = await r.json();
+      if (r.ok) { setMsg(''); onSuccess(); }
+      else { setMsg(d.detail || 'Activation failed'); }
+    } catch(e) { setMsg('Error: ' + e.message); }
+    setLoading(false);
+  };
+
+  const handleKeyDown = (e) => { if (e.key === 'Enter') activate(); };
+
+  return (
+    <div style={{
+      position:'fixed',top:0,left:0,right:0,bottom:0,
+      background:'rgba(0,0,0,0.75)',backdropFilter:'blur(6px)',
+      display:'flex',alignItems:'center',justifyContent:'center',
+      zIndex:10000,
+    }}>
+      <div style={{
+        background:'#1a1a2e',border:'1px solid #374151',borderRadius:16,
+        padding:40,maxWidth:520,width:'90%',textAlign:'center',
+        boxShadow:'0 20px 60px rgba(0,0,0,0.5)',
+      }}>
+        <div style={{fontSize:56,marginBottom:16}}>{isExpired ? '⏰' : '🔑'}</div>
+        <h2 style={{color:'#f9fafb',marginBottom:8,fontSize:22}}>
+          {isExpired ? 'License Expired' : 'License Required'}
+        </h2>
+        <p style={{color:'#9ca3af',marginBottom:8,fontSize:14,lineHeight:1.6}}>
+          {isExpired
+            ? `Your PatchMaster license expired on ${li.expires_at}. All services are paused until a valid license is activated.`
+            : 'PatchMaster requires a valid license to operate. Please enter your license key to activate all services.'}
+        </p>
+        {isExpired && li.customer && (
+          <p style={{color:'#6b7280',fontSize:12,marginBottom:16}}>
+            Customer: {li.customer} | Plan: {li.plan_label} | Tier: {li.tier_label}
+          </p>
+        )}
+        <p style={{color:'#d1d5db',fontSize:13,marginBottom:20}}>
+          Contact your PatchMaster vendor to obtain a new license key.
+        </p>
+        <div style={{display:'flex',gap:10,marginBottom:12}}>
+          <input
+            className="input"
+            style={{flex:1,fontFamily:'monospace',fontSize:12,padding:'10px 14px',background:'#111827',border:'1px solid #374151',color:'#f9fafb',borderRadius:8}}
+            placeholder="PM1-xxxxxxxxx.xxxxxxxx"
+            value={key}
+            onChange={e => setKey(e.target.value)}
+            onKeyDown={handleKeyDown}
+            autoFocus
+          />
+          <button
+            className="btn btn-primary"
+            onClick={activate}
+            disabled={loading}
+            style={{padding:'10px 24px',borderRadius:8,fontWeight:600}}
+          >
+            {loading ? 'Activating...' : 'Activate'}
+          </button>
+        </div>
+        {msg && <p style={{color:'#dc3545',fontWeight:500,fontSize:13,marginTop:8}}>{msg}</p>}
       </div>
     </div>
   );
@@ -1888,104 +1984,157 @@ function CICDPage() {
 
 /* ─── Monitoring Tools ─── */
 function MonitoringToolsPage() {
-  const [status, setStatus] = useState(null);
+  const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [enforcing, setEnforcing] = useState(false);
+  const [actionMsg, setActionMsg] = useState('');
   const masterIp = window.location.hostname;
 
-  useEffect(() => {
+  const fetchStatus = () => {
     setLoading(true);
-    apiFetch(`${API}/api/auth/monitoring-status`).then(r=>r.json()).then(d=>{setStatus(d);setLoading(false);}).catch(()=>setLoading(false));
-  }, []);
+    apiFetch(`${API}/api/monitoring/status`).then(r=>r.json()).then(d=>{setData(d);setLoading(false);}).catch(()=>setLoading(false));
+  };
+
+  useEffect(()=>{fetchStatus();},[]);
+
+  const handleEnforce = () => {
+    setEnforcing(true); setActionMsg('');
+    apiFetch(`${API}/api/monitoring/enforce`,{method:'POST'}).then(r=>r.json()).then(d=>{
+      setActionMsg(d.action === 'started' ? 'Monitoring services started successfully!' : 'Monitoring services stopped.');
+      setEnforcing(false); fetchStatus();
+    }).catch(()=>{setActionMsg('Enforcement failed');setEnforcing(false);});
+  };
+
+  const handleInstallStart = () => {
+    setEnforcing(true); setActionMsg('Installing & starting monitoring services...');
+    apiFetch(`${API}/api/monitoring/enforce`,{method:'POST'}).then(r=>r.json()).then(d=>{
+      setActionMsg('Monitoring services installed and started!');
+      setEnforcing(false); fetchStatus();
+    }).catch(()=>{setActionMsg('Operation failed');setEnforcing(false);});
+  };
 
   const toolInfo = {
-    prometheus: { icon: '🔥', desc: 'Metrics collection & alerting', docs: 'https://prometheus.io/docs/' },
-    grafana:    { icon: '📊', desc: 'Dashboards & visualization', docs: 'https://grafana.com/docs/' },
-    zabbix:     { icon: '🦊', desc: 'Infrastructure monitoring', docs: 'https://www.zabbix.com/documentation' },
+    prometheus: { icon: '🔥', name: 'Prometheus', desc: 'Metrics collection & alerting', urlPort: 9090 },
+    grafana:    { icon: '📊', name: 'Grafana',    desc: 'Dashboards & visualization', urlPort: 3001 },
+    zabbix:     { icon: '🦊', name: 'Zabbix',     desc: 'Infrastructure monitoring', urlPort: 10051 },
   };
+
+  const licensed = data?.licensed;
+  const services = data?.services || {};
+  const allRunning = Object.values(services).every(s => s.running);
+  const allInstalled = Object.values(services).every(s => s.installed);
+  const anyRunning = Object.values(services).some(s => s.running);
 
   return (
     <div>
-      <div className="card">
-        <h3>📈 Monitoring Tools</h3>
-        <p style={{color:'#9ca3af',marginBottom:16}}>Quick-launch monitoring tools if installed on this infrastructure. PatchMaster exposes <code>/metrics</code> endpoint (Prometheus format) for integration.</p>
-        {loading ? <p>Checking services...</p> : !status ? <p className="text-danger">Could not check monitoring status</p> : (
-          <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))',gap:16}}>
-            {Object.entries(status).map(([key, s]) => {
-              const info = toolInfo[key] || {};
-              return (
-                <div key={key} style={{
-                  padding:20, borderRadius:12,
-                  background: s.reachable ? 'rgba(40,167,69,0.1)' : 'rgba(108,117,125,0.08)',
-                  border: s.reachable ? '2px solid #28a745' : '2px solid #6c757d',
-                }}>
-                  <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:12}}>
-                    <span style={{fontSize:28}}>{info.icon||'🔧'}</span>
-                    <div>
-                      <h4 style={{margin:0}}>{s.name}</h4>
-                      <span style={{fontSize:12,color:'#9ca3af'}}>{info.desc}</span>
-                    </div>
-                  </div>
-                  <div style={{marginBottom:12}}>
-                    <span style={{fontSize:13}}>Port: <strong>{s.port}</strong></span>
-                    <span style={{marginLeft:12}}>
-                      Status: {s.reachable
-                        ? <span className="badge badge-success">Running</span>
-                        : <span className="badge badge-danger">Not Detected</span>}
-                    </span>
-                  </div>
-                  {s.reachable && s.url ? (
-                    <a href={s.url.replace('localhost', masterIp).replace('127.0.0.1', masterIp)} target="_blank" rel="noopener noreferrer" className="btn btn-primary" style={{width:'100%',textAlign:'center'}}>
-                      Open {s.name} ↗
-                    </a>
-                  ) : (
-                    <div style={{padding:12,borderRadius:8,background:'rgba(220,53,69,0.1)',border:'1px solid rgba(220,53,69,0.3)'}}>
-                      <p style={{margin:0,fontSize:13,color:'#dc3545',fontWeight:600}}>⚠️ {s.name} is not installed or not running on port {s.port}.</p>
-                      <p style={{margin:'8px 0 0',fontSize:12,color:'#9ca3af'}}>
-                        To install, run PatchMaster installer with <code>--with-monitoring</code> flag, or set up {s.name} manually and ensure it's listening on port {s.port}.
-                      </p>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+      {/* License Tier Banner */}
+      <div className="card" style={{
+        background: licensed ? 'linear-gradient(135deg, #064e3b 0%, #065f46 100%)' : 'linear-gradient(135deg, #7f1d1d 0%, #991b1b 100%)',
+        border: licensed ? '2px solid #10b981' : '2px solid #dc2626',
+      }}>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:16}}>
+          <div>
+            <h3 style={{margin:0,color:'#fff'}}>
+              {licensed ? '✅ Monitoring Licensed' : '🔒 Monitoring Not Available'}
+            </h3>
+            <p style={{margin:'8px 0 0',color:licensed?'#a7f3d0':'#fca5a5',fontSize:14}}>
+              {licensed
+                ? `Your ${data?.tier_label || 'license'} tier includes Prometheus, Grafana & Zabbix monitoring.`
+                : `Monitoring requires Standard tier or above. Current tier: ${data?.tier_label || 'Basic'}. Upgrade your license to enable monitoring.`}
+            </p>
           </div>
-        )}
+          {licensed && hasRole('admin') && (
+            <button className="btn btn-primary" onClick={handleEnforce} disabled={enforcing} style={{whiteSpace:'nowrap'}}>
+              {enforcing ? 'Working...' : allRunning ? '🔄 Re-enforce' : '🚀 Install & Start All'}
+            </button>
+          )}
+        </div>
+        {actionMsg && <p style={{margin:'10px 0 0',color:'#fcd34d',fontWeight:600}}>{actionMsg}</p>}
       </div>
 
-      {/* Integration info */}
+      {/* Service Status Cards */}
+      {loading ? <div className="card"><p>Checking monitoring services...</p></div> : (
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(300px,1fr))',gap:16,marginBottom:16}}>
+          {Object.entries(services).map(([key, s]) => {
+            const info = toolInfo[key] || {};
+            const isUp = s.running;
+            const isInstalled = s.installed;
+            return (
+              <div key={key} className="card" style={{
+                border: !licensed ? '2px solid #4b5563' : isUp ? '2px solid #10b981' : isInstalled ? '2px solid #f59e0b' : '2px solid #dc2626',
+                opacity: licensed ? 1 : 0.6,
+              }}>
+                <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:14}}>
+                  <span style={{fontSize:32}}>{info.icon||'🔧'}</span>
+                  <div style={{flex:1}}>
+                    <h4 style={{margin:0}}>{info.name || s.name || key}</h4>
+                    <span style={{fontSize:12,color:'#9ca3af'}}>{info.desc}</span>
+                  </div>
+                  {isUp ? (
+                    <span className="badge badge-success" style={{fontSize:12,padding:'4px 10px'}}>Running</span>
+                  ) : isInstalled ? (
+                    <span className="badge badge-warning" style={{fontSize:12,padding:'4px 10px'}}>Stopped</span>
+                  ) : (
+                    <span className="badge badge-danger" style={{fontSize:12,padding:'4px 10px'}}>Not Installed</span>
+                  )}
+                </div>
+
+                <div style={{fontSize:13,marginBottom:12}}>
+                  <span>Port: <strong>{s.port}</strong></span>
+                  <span style={{marginLeft:16}}>Installed: <strong>{isInstalled ? 'Yes' : 'No'}</strong></span>
+                </div>
+
+                {!licensed ? (
+                  <div style={{padding:12,borderRadius:8,background:'rgba(107,114,128,0.15)',border:'1px solid rgba(107,114,128,0.3)'}}>
+                    <p style={{margin:0,fontSize:13,color:'#9ca3af'}}>🔒 Upgrade to Standard tier or above to enable monitoring services.</p>
+                  </div>
+                ) : isUp ? (
+                  <a href={`http://${masterIp}:${info.urlPort || s.port}`} target="_blank" rel="noopener noreferrer"
+                    className="btn btn-primary" style={{width:'100%',textAlign:'center'}}>
+                    Open {info.name} ↗
+                  </a>
+                ) : (
+                  <div style={{padding:12,borderRadius:8,background:'rgba(245,158,11,0.1)',border:'1px solid rgba(245,158,11,0.3)'}}>
+                    <p style={{margin:0,fontSize:13,color:'#f59e0b',fontWeight:600}}>
+                      {isInstalled ? '⏸️ Service is installed but stopped.' : '📦 Service not installed.'}
+                    </p>
+                    <p style={{margin:'6px 0 0',fontSize:12,color:'#9ca3af'}}>
+                      {isInstalled
+                        ? 'Click "Install & Start All" above to start monitoring services.'
+                        : 'Click "Install & Start All" above — PatchMaster will install and configure automatically.'}
+                    </p>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Tier comparison for monitoring */}
+      <div className="card">
+        <h3>📋 Monitoring by License Tier</h3>
+        <table className="table" style={{fontSize:13}}>
+          <thead><tr><th>Feature</th><th>Basic</th><th>Standard</th><th>DevOps</th><th>Enterprise</th></tr></thead>
+          <tbody>
+            <tr><td>Prometheus (Metrics)</td><td style={{color:'#dc3545'}}>✗</td><td style={{color:'#28a745'}}>✓</td><td style={{color:'#28a745'}}>✓</td><td style={{color:'#28a745'}}>✓</td></tr>
+            <tr><td>Grafana (Dashboards)</td><td style={{color:'#dc3545'}}>✗</td><td style={{color:'#28a745'}}>✓</td><td style={{color:'#28a745'}}>✓</td><td style={{color:'#28a745'}}>✓</td></tr>
+            <tr><td>Zabbix (Infrastructure)</td><td style={{color:'#dc3545'}}>✗</td><td style={{color:'#28a745'}}>✓</td><td style={{color:'#28a745'}}>✓</td><td style={{color:'#28a745'}}>✓</td></tr>
+            <tr><td>Auto Install & Configure</td><td style={{color:'#dc3545'}}>✗</td><td style={{color:'#28a745'}}>✓</td><td style={{color:'#28a745'}}>✓</td><td style={{color:'#28a745'}}>✓</td></tr>
+            <tr><td>License-based Auto Start/Stop</td><td style={{color:'#dc3545'}}>✗</td><td style={{color:'#28a745'}}>✓</td><td style={{color:'#28a745'}}>✓</td><td style={{color:'#28a745'}}>✓</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      {/* Integration info - always visible */}
       <div className="card">
         <h3>🔗 PatchMaster Metrics Endpoint</h3>
-        <p>PatchMaster exposes metrics at <code>/metrics</code> in Prometheus format, ready to scrape.</p>
+        <p style={{color:'#9ca3af'}}>PatchMaster exposes metrics at <code>/metrics</code> in Prometheus format, ready to scrape.</p>
         <pre className="code-block">{`# Prometheus scrape config
 - job_name: 'patchmaster'
   metrics_path: '/metrics'
   static_configs:
     - targets: ['${masterIp}:8000']`}</pre>
-      </div>
-
-      <div className="card">
-        <h3>📋 Setup Commands</h3>
-        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))',gap:16}}>
-          <div>
-            <h4>🔥 Prometheus</h4>
-            <pre className="code-block" style={{fontSize:11}}>{`sudo apt install prometheus
-sudo systemctl enable --now prometheus
-# Default: http://localhost:9090`}</pre>
-          </div>
-          <div>
-            <h4>📊 Grafana</h4>
-            <pre className="code-block" style={{fontSize:11}}>{`sudo apt install grafana
-sudo systemctl enable --now grafana-server
-# Default: http://localhost:3001`}</pre>
-          </div>
-          <div>
-            <h4>🦊 Zabbix</h4>
-            <pre className="code-block" style={{fontSize:11}}>{`# Install from zabbix.com repository
-sudo apt install zabbix-server-pgsql zabbix-frontend-php
-sudo systemctl enable --now zabbix-server
-# Default: http://localhost:8080`}</pre>
-          </div>
-        </div>
       </div>
     </div>
   );
@@ -2022,12 +2171,7 @@ function LicensePage({ licenseInfo, onRefresh }) {
   const [key, setKey] = useState('');
   const [msg, setMsg] = useState('');
   const [loading, setLoading] = useState(false);
-  const [tierData, setTierData] = useState(null);
   const li = licenseInfo || {};
-
-  useEffect(() => {
-    fetch(`${API}/api/license/tiers`).then(r=>r.json()).then(setTierData).catch(()=>{});
-  }, []);
 
   const activate = async () => {
     if (!key.trim()) { setMsg('Please enter a license key'); return; }
@@ -2041,20 +2185,10 @@ function LicensePage({ licenseInfo, onRefresh }) {
     setLoading(false);
   };
 
-  const deactivate = async () => {
-    if (!window.confirm('Deactivate the current license? PatchMaster will stop working.')) return;
-    try {
-      const r = await apiFetch(`${API}/api/license/deactivate`, { method:'DELETE' });
-      if (r.ok) { setMsg('License deactivated'); onRefresh(); }
-      else { const d = await r.json(); setMsg(d.detail || 'Failed'); }
-    } catch(e) { setMsg('Error: ' + e.message); }
-  };
-
   const statusColor = !li.activated ? '#6c757d' : li.expired ? '#dc3545' : li.days_remaining <= 30 ? '#ffc107' : '#28a745';
   const statusLabel = !li.activated ? 'Not Activated' : li.expired ? 'Expired' : 'Active';
   const tierColors = { basic:'#3b82f6', standard:'#10b981', devops:'#f59e0b', enterprise:'#8b5cf6' };
   const tierIcons = { basic:'📦', standard:'⭐', devops:'🚀', enterprise:'👑' };
-  const allFeats = tierData ? tierData.all_features : [];
 
   return (
     <div>
@@ -2086,27 +2220,22 @@ function LicensePage({ licenseInfo, onRefresh }) {
                 </span>
               </td></tr>
               <tr><td><strong>Max Hosts</strong></td><td>{li.max_hosts === 0 ? 'Unlimited' : li.max_hosts}</td></tr>
-              <tr><td><strong>Version Compat</strong></td><td>{li.version_compat || '2.x'} (tool: {li.tool_version || '2.0'})</td></tr>
+              <tr><td><strong>Version</strong></td><td>v{li.tool_version || '2.0'} (compatible: {li.version_compat || '2.x'})</td></tr>
             </tbody></table>
 
             {/* Licensed Features */}
             {li.features && li.features.length > 0 && (
               <div style={{marginTop:16}}>
-                <h4>Licensed Features ({li.features.length}/{allFeats.length || 19})</h4>
+                <h4>Licensed Features ({li.features.length})</h4>
                 <div style={{display:'flex',flexWrap:'wrap',gap:6,marginTop:8}}>
-                  {(allFeats.length ? allFeats : li.features).map(f => {
-                    const enabled = li.features.includes(f);
-                    return (
-                      <span key={f} style={{
-                        padding:'4px 10px',borderRadius:10,fontSize:12,fontWeight:500,
-                        background: enabled ? '#065f46' : '#1f2937',
-                        color: enabled ? '#6ee7b7' : '#6b7280',
-                        border: enabled ? '1px solid #10b981' : '1px solid #374151',
-                      }}>
-                        {enabled ? '✓' : '✗'} {f}
-                      </span>
-                    );
-                  })}
+                  {li.features.map(f => (
+                    <span key={f} style={{
+                      padding:'4px 10px',borderRadius:10,fontSize:12,fontWeight:500,
+                      background:'#065f46',color:'#6ee7b7',border:'1px solid #10b981',
+                    }}>
+                      ✓ {f}
+                    </span>
+                  ))}
                 </div>
               </div>
             )}
@@ -2116,97 +2245,17 @@ function LicensePage({ licenseInfo, onRefresh }) {
         ) : (
           <p style={{color:'#6c757d'}}>No license key found. Enter a license key below to activate PatchMaster.</p>
         )}
-        {li.activated && li.valid && hasRole('admin') && (
-          <button className="btn btn-danger" onClick={deactivate} style={{marginTop:12}}>Deactivate License</button>
-        )}
       </div>
 
       {/* Activate / Renew */}
       <div className="card">
         <h3>{li.activated && li.valid && !li.expired ? '🔄 Renew / Change License' : '🔑 Activate License'}</h3>
-        <p style={{color:'#666',marginBottom:12}}>Paste the license key provided by your PatchMaster administrator.</p>
+        <p style={{color:'#666',marginBottom:12}}>Paste the license key provided by your PatchMaster vendor.</p>
         <div className="form-row">
           <input className="input" style={{flex:1,fontFamily:'monospace',fontSize:12}} placeholder="PM1-xxxxxxxxx.xxxxxxxx" value={key} onChange={e => setKey(e.target.value)} />
           <button className="btn btn-primary" onClick={activate} disabled={loading}>{loading ? 'Activating...' : 'Activate'}</button>
         </div>
         {msg && <p style={{marginTop:8,fontWeight:500,color:msg.includes('successfully')?'#28a745':'#dc3545'}}>{msg}</p>}
-      </div>
-
-      {/* Tier Comparison Matrix */}
-      <div className="card">
-        <h3>📊 License Tier Comparison</h3>
-        <p style={{color:'#9ca3af',marginBottom:16}}>Choose the right tier for your needs. All tiers are available with 1-year, 2-year, or 5-year plans.</p>
-        {tierData && tierData.tiers ? (
-          <div>
-            {/* Tier Cards */}
-            <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))',gap:16,marginBottom:24}}>
-              {tierData.tiers.map(t => {
-                const isCurrent = li.tier === t.tier;
-                return (
-                  <div key={t.tier} style={{
-                    border: isCurrent ? `2px solid ${tierColors[t.tier]}` : '1px solid #374151',
-                    borderRadius:12, padding:20, background: isCurrent ? '#1a1a2e' : '#111827',
-                    position:'relative',
-                  }}>
-                    {isCurrent && <span style={{position:'absolute',top:-10,right:12,background:tierColors[t.tier],color:'#fff',padding:'2px 10px',borderRadius:10,fontSize:11,fontWeight:600}}>CURRENT</span>}
-                    <div style={{fontSize:28,marginBottom:8}}>{tierIcons[t.tier]}</div>
-                    <h4 style={{color:tierColors[t.tier],marginBottom:4}}>{t.label}</h4>
-                    <p style={{color:'#9ca3af',fontSize:13,marginBottom:12}}>{t.feature_count} features</p>
-                    <div style={{fontSize:12}}>
-                      {t.features.map(f => (
-                        <div key={f} style={{color:'#d1d5db',padding:'2px 0'}}>✓ {f}</div>
-                      ))}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-
-            {/* Feature Matrix Table */}
-            <h4 style={{marginBottom:12}}>Feature Matrix</h4>
-            <div style={{overflowX:'auto'}}>
-              <table className="table" style={{fontSize:13}}>
-                <thead>
-                  <tr>
-                    <th style={{textAlign:'left'}}>Feature</th>
-                    {tierData.tiers.map(t => (
-                      <th key={t.tier} style={{textAlign:'center',color:tierColors[t.tier]}}>{tierIcons[t.tier]} {t.label}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {tierData.all_features.map(f => (
-                    <tr key={f}>
-                      <td>{f}</td>
-                      {tierData.tiers.map(t => (
-                        <td key={t.tier} style={{textAlign:'center'}}>
-                          {t.features.includes(f)
-                            ? <span style={{color:'#10b981',fontSize:16}}>✓</span>
-                            : <span style={{color:'#4b5563'}}>—</span>}
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        ) : <p style={{color:'#6b7280'}}>Loading tier data...</p>}
-      </div>
-
-      {/* Plan Duration Reference */}
-      <div className="card">
-        <h3>📋 Plan Durations</h3>
-        <table className="table">
-          <thead><tr><th>Plan</th><th>Duration</th><th>Description</th></tr></thead>
-          <tbody>
-            <tr><td><span className="badge" style={{background:'#6b7280',color:'#fff'}}>Testing</span></td><td>1 Month</td><td>Full features enabled for evaluation (Enterprise tier)</td></tr>
-            <tr><td><span className="badge" style={{background:'#3b82f6',color:'#fff'}}>1-Year</span></td><td>365 days</td><td>Annual license — any tier</td></tr>
-            <tr><td><span className="badge" style={{background:'#f59e0b',color:'#fff'}}>2-Year</span></td><td>730 days</td><td>Extended license — any tier</td></tr>
-            <tr><td><span className="badge" style={{background:'#8b5cf6',color:'#fff'}}>5-Year</span></td><td>1825 days</td><td>Long-term deployment — any tier</td></tr>
-          </tbody>
-        </table>
-        <p style={{color:'#888',fontSize:12,marginTop:8}}>Contact your PatchMaster vendor to obtain a license key. Testing licenses unlock all features for evaluation.</p>
       </div>
     </div>
   );

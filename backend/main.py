@@ -21,12 +21,31 @@ from api.zabbix import router as zabbix_router
 from api.license_router import router as license_router
 from api.cicd import router as cicd_router
 from api.git_integration import router as git_router
+from api.monitoring import router as monitoring_router
 from license import get_license_info
+import monitoring_manager
+import logging
+
+logger = logging.getLogger("patchmaster")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    # Enforce monitoring services based on current license at startup
+    try:
+        info = get_license_info()
+        features = info.get("features", [])
+        if info.get("valid") and not info.get("expired"):
+            monitoring_manager.enforce_license(features)
+            logger.info("Monitoring enforcement complete (tier=%s, monitoring=%s)",
+                        info.get("tier", "?"), "monitoring" in features)
+        else:
+            # No valid license — stop monitoring
+            monitoring_manager.enforce_license([])
+            logger.info("No valid license — monitoring services stopped")
+    except Exception as e:
+        logger.warning("Monitoring enforcement on startup failed: %s", e)
     yield
 
 
@@ -46,6 +65,7 @@ class LicenseMiddleware(BaseHTTPMiddleware):
         "/api/license/",
         "/api/auth/login",
         "/api/auth/register",
+        "/api/monitoring/status",
         "/docs",
         "/openapi.json",
         "/static/",
@@ -60,6 +80,8 @@ class LicenseMiddleware(BaseHTTPMiddleware):
         "/api/compliance": "compliance",
         "/api/audit": "audit",
         "/api/notifications": "notifications",
+        "/api/monitoring": "monitoring",
+        "/api/zabbix": "monitoring",
     }
 
     async def dispatch(self, request, call_next):
@@ -154,6 +176,8 @@ app.include_router(notifications_router)
 app.include_router(metrics_router)
 # Zabbix integration
 app.include_router(zabbix_router)
+# Monitoring service management
+app.include_router(monitoring_router)
 # License management
 app.include_router(license_router)
 # CI/CD pipelines

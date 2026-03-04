@@ -55,6 +55,7 @@ TIERS = {
             "dashboard", "hosts", "groups", "patches", "snapshots",
             "compare", "offline", "schedules", "jobs", "onboarding",
             "compliance", "cve", "audit", "notifications", "users",
+            "monitoring",
         ],
     },
     "devops": {
@@ -64,7 +65,7 @@ TIERS = {
             "dashboard", "hosts", "groups", "patches", "snapshots",
             "compare", "offline", "schedules", "jobs", "onboarding",
             "compliance", "cve", "audit", "notifications", "users",
-            "cicd", "git",
+            "cicd", "git", "monitoring",
         ],
     },
     "enterprise": {
@@ -73,7 +74,8 @@ TIERS = {
         "features": [
             "dashboard", "compliance", "hosts", "groups", "patches", "snapshots",
             "compare", "offline", "schedules", "cve", "jobs", "audit",
-            "notifications", "users", "license", "cicd", "git", "onboarding", "settings",
+            "notifications", "users", "license", "cicd", "git", "onboarding",
+            "settings", "monitoring",
         ],
     },
 }
